@@ -54,10 +54,10 @@ def _deal_tableau(deck, n=4):
     return table
 
 def load_initial_state(playerCount: int) -> GameState:
-    deck_t1 = load_cards("../data/rank1_cards.csv", rank=1)
-    deck_t2 = load_cards("../data/rank2_cards.csv", rank=2)
-    deck_t3 = load_cards("../data/rank3_cards.csv", rank=3)
-    nobles = load_nobles("../data/nobles.csv")
+    deck_t1 = load_cards("data/rank1_cards.csv", rank=1)
+    deck_t2 = load_cards("data/rank2_cards.csv", rank=2)
+    deck_t3 = load_cards("data/rank3_cards.csv", rank=3)
+    nobles = load_nobles("data/nobles.csv")
 
     random.shuffle(deck_t1); random.shuffle(deck_t2); random.shuffle(deck_t3); random.shuffle(nobles)
 
