@@ -57,6 +57,7 @@ STATUS_H = 44               # reserved strip at bottom for the status text
 FONT = pygame.font.SysFont("arial", 18)
 FONT_SMALL = pygame.font.SysFont("arial", 14)
 FONT_BIG = pygame.font.SysFont("arial", 22, bold=True)
+FONT_SMALL_BOLD = pygame.font.SysFont("arial", 14, bold=True)
 
 
 # --- Model → UI normalisers (support both your real models and the old mock) ---
@@ -218,7 +219,7 @@ def draw_player_panel(surface, players: List[Player], active_idx: int, x0: int, 
     # Players column
     n = min(4, len(players))
     top = y0 + 30
-    block_h = 150   # taller to fit stacked rows + total line
+    block_h = 150
     pad = 16
 
     for idx in range(n):
@@ -236,32 +237,38 @@ def draw_player_panel(surface, players: List[Player], active_idx: int, x0: int, 
         step = max(40, available // len(TOKEN_COLOURS))
         start_x = block.x + 12 + step // 2
 
-        cy_tokens = block.y + 50
-        cy_bonus  = cy_tokens + 28
+        cy_tokens = block.y + 52
+        cy_bonus  = cy_tokens + 32
 
+        # token row
         for i, c in enumerate(TOKEN_COLOURS):
             cx = start_x + i * step
 
-            # token circle
-            pygame.draw.circle(surface, COLOUR_TO_RGB[c], (cx, cy_tokens), 10)
-            pygame.draw.circle(surface, DARKGREY, (cx, cy_tokens), 10, 1)
+            # token circle (slightly larger, thicker border)
+            pygame.draw.circle(surface, COLOUR_TO_RGB[c], (cx, cy_tokens), 13)
+            pygame.draw.circle(surface, DARKGREY, (cx, cy_tokens), 13, 2)
+
+            # token count inside circle, bold for clarity
             cnt = str(p.tokens.get(c, 0))
-            txt = FONT_SMALL.render(cnt, True, WHITE if c == "onyx" else BLACK)
+            txt = FONT_SMALL_BOLD.render(cnt, True, WHITE if c == "onyx" else BLACK)
             surface.blit(txt, txt.get_rect(center=(cx, cy_tokens)))
 
-            # bonus square (skip gold)
-            if c != "gold":
-                size = 18
-                rect = pygame.Rect(cx - size//2, cy_bonus - size//2, size, size)
-                pygame.draw.rect(surface, COLOUR_TO_RGB[c], rect, border_radius=4)
-                pygame.draw.rect(surface, DARKGREY, rect, 1, border_radius=4)
-                b = str(p.bonuses.get(c, 0))
-                txt = FONT_SMALL.render(b, True, BLACK if c != "onyx" else WHITE)
-                surface.blit(txt, txt.get_rect(center=rect.center))
+        # bonus row (skip gold)
+        for i, c in enumerate([k for k in TOKEN_COLOURS if k != "gold"]):
+            cx = start_x + i * step
+            size = 20
+            rect = pygame.Rect(cx - size//2, cy_bonus - size//2, size, size)
+            pygame.draw.rect(surface, COLOUR_TO_RGB[c], rect, border_radius=4)
+            pygame.draw.rect(surface, DARKGREY, rect, 2, border_radius=4)
+
+            # bonus count inside square, bold for clarity
+            b = str(p.bonuses.get(c, 0))
+            btxt = FONT_SMALL_BOLD.render(b, True, WHITE if c == "onyx" else BLACK)
+            surface.blit(btxt, btxt.get_rect(center=rect.center))
 
         # ---- Total coin count ----
         total = sum(p.tokens.values())
-        cy_total = cy_bonus + 26
+        cy_total = cy_bonus + 34
         total_txt = FONT_SMALL.render(f"Total coins: {total}", True, BLACK)
         surface.blit(total_txt, total_txt.get_rect(center=(block.centerx, cy_total)))
 
@@ -274,10 +281,9 @@ def draw_player_panel(surface, players: List[Player], active_idx: int, x0: int, 
             r = pygame.Rect(start_rx + j*(CARD_W + GAP_X), row_y, CARD_W, CARD_H)
             c.rect = r  # make clickable
 
-            # Use normalizers so keys/values match our colour map
-            bonus = ui_card_bonus(c)              # e.g., "diamond"
-            points = ui_card_points(c)            # int
-            cost = ui_card_cost(c)                # {"diamond": n, ...}
+            bonus = ui_card_bonus(c)
+            points = ui_card_points(c)
+            cost = ui_card_cost(c)
             tier_val = getattr(c, "tier", getattr(c, "rank", "?"))
             tier_colour = WHITE if bonus == "onyx" else BLACK
 
@@ -295,15 +301,17 @@ def draw_player_panel(surface, players: List[Player], active_idx: int, x0: int, 
             tier = FONT_SMALL.render(f"T{tier_val}", True, tier_colour)
             surface.blit(tier, (r.right-28, r.y+6))
 
-            # Cost pips (use normalized colour keys)
+            # Cost pips
             yy = r.y + 126
             for cc, vv in sorted(cost.items()):
-                dot = pygame.Surface((14, 14), pygame.SRCALPHA)
-                pygame.draw.circle(dot, COLOUR_TO_RGB.get(cc, GREY), (7, 7), 7)
+                dot = pygame.Surface((16, 16), pygame.SRCALPHA)
+                pygame.draw.circle(dot, COLOUR_TO_RGB.get(cc, GREY), (8, 8), 8)
                 surface.blit(dot, (r.x+10, yy+2))
                 cost_txt = FONT_SMALL.render(str(vv), True, BLACK)
-                surface.blit(cost_txt, (r.x+28, yy-2))
-                yy -= 18
+                surface.blit(cost_txt, (r.x+30, yy-2))
+                yy -= 20
+
+
 
 
 def draw_bank_on_board(surface, chip_centres, bank):
@@ -315,54 +323,70 @@ def draw_bank_on_board(surface, chip_centres, bank):
 
 # ------------------------ Board Layout Helpers ------------------------
 
-def layout_board(t1: List[Card], t2: List[Card], t3: List[Card], nobles: List[Noble], numPlayers: int):
-    # --- Nobles, centred at the top ---
-    nobles_show = min(numPlayers+1, len(nobles))
-    nobles_row_w = nobles_show*NOBLE_W + (nobles_show-1)*GAP_X
-    nobles_x0 = BOARD_LEFT + (BOARD_W - nobles_row_w)//2
-    noble_rects = [pygame.Rect(nobles_x0 + i*(NOBLE_W+GAP_X), MARGIN, NOBLE_W, NOBLE_H)
-                   for i in range(nobles_show)]
-    for nb, r in zip(nobles[:nobles_show], noble_rects): nb.rect = r
+def layout_board(table_t1: List[Card],
+                 table_t2: List[Card],
+                 table_t3: List[Card],
+                 nobles: List[Noble],
+                 numPlayers: int) -> Dict[str, object]:
+    # --- Nobles, centred at the top (players+1) ---
+    nobles_show = min(numPlayers + 1, len(nobles))
+    nobles_row_w = nobles_show * NOBLE_W + (nobles_show - 1) * GAP_X
+    nobles_x0 = BOARD_LEFT + (BOARD_W - nobles_row_w) // 2
+    noble_rects = [
+        pygame.Rect(nobles_x0 + i * (NOBLE_W + GAP_X), MARGIN, NOBLE_W, NOBLE_H)
+        for i in range(nobles_show)
+    ]
+    for nb, r in zip(nobles[:nobles_show], noble_rects):
+        nb.rect = r
 
     # --- Card rows (Tier 3 top, 2 mid, 1 bottom) ---
-    # Each row has: a deck pile at the left + 4 face-up cards; the *whole row group* is centred.
     row_top_y = MARGIN + NOBLE_H + 20
-    visible = 4
-    rows = []  # each: (deck_rect, card_rects_list)
-    for row_idx, deck_source in enumerate([t3, t2, t1]):  # T3, T2, T1
-        y = row_top_y + row_idx*(ROW_H + GAP_Y)
-        group_w = CARD_W + GAP_X + (visible*CARD_W + (visible-1)*GAP_X)
-        left_x = BOARD_LEFT + (BOARD_W - group_w)//2
+    max_visible = 4
+    rows = []  # (deck_rect, card_rects_for_tableau)
+
+    for row_idx, tableau in enumerate([table_t3, table_t2, table_t1]):  # T3, T2, T1
+        y = row_top_y + row_idx * (ROW_H + GAP_Y)
+
+        # The row group width is always: deck + gap + 4 card slots (keeps the look centred)
+        group_w = CARD_W + GAP_X + (max_visible * CARD_W + (max_visible - 1) * GAP_X)
+        left_x = BOARD_LEFT + (BOARD_W - group_w) // 2
+
         deck_rect = pygame.Rect(left_x, y, CARD_W, CARD_H)
-        card_rects = [pygame.Rect(left_x + CARD_W + GAP_X + i*(CARD_W+GAP_X), y, CARD_W, CARD_H)
-                      for i in range(visible)]
+
+        visible = min(max_visible, len(tableau))
+        card_rects = [
+            pygame.Rect(left_x + CARD_W + GAP_X + i * (CARD_W + GAP_X), y, CARD_W, CARD_H)
+            for i in range(visible)
+        ]
+        # assign rects to the **tableau** cards so draw_card() places them correctly
+        for c, r in zip(tableau[:visible], card_rects):
+            c.rect = r
+
         rows.append((deck_rect, card_rects))
-        for c, r in zip(deck_source[:visible], card_rects): c.rect = r
 
     (deck3_rect, r3), (deck2_rect, r2), (deck1_rect, r1) = rows
 
     # --- Bottom-centred token bank (single row, correctly clamped) ---
-    step = TOKEN_R*2 + 28
+    step = TOKEN_R * 2 + 28
     n = len(TOKEN_COLOURS)
-
     row_visual_w = (n - 1) * step + 2 * TOKEN_R
-    left_edge     = BOARD_LEFT + (BOARD_W - row_visual_w) // 2
-    first_cx      = left_edge + TOKEN_R
+    left_edge   = BOARD_LEFT + (BOARD_W - row_visual_w) // 2
+    first_cx    = left_edge + TOKEN_R
 
-    gap_above_t1  = 28
-    lower_bound   = r1[0].bottom + gap_above_t1 + TOKEN_R
-    upper_bound   = H - STATUS_H - 8 - TOKEN_R
+    # Compute Tier-1 row bottom from its y + CARD_H (don’t rely on r1[0] existing)
+    tier1_y = row_top_y + 2 * (ROW_H + GAP_Y)  # row_idx=2
+    tier1_bottom = tier1_y + CARD_H
 
-    if lower_bound <= upper_bound:
-        bank_y = upper_bound
-    else:
-        bank_y = lower_bound
+    gap_above_t1 = 28
+    lower_bound  = tier1_bottom + gap_above_t1 + TOKEN_R
+    upper_bound  = H - STATUS_H - 8 - TOKEN_R
+    bank_y       = upper_bound if lower_bound <= upper_bound else lower_bound
 
-    chip_centres = [(colour, (first_cx + i*step, bank_y)) for i, colour in enumerate(TOKEN_COLOURS)]
+    chip_centres = [(colour, (first_cx + i * step, bank_y)) for i, colour in enumerate(TOKEN_COLOURS)]
 
     return {
         "nobles": noble_rects,
-        "t3": r3, "t2": r2, "t1": r1,
-        "deck3": deck3_rect, "deck2": deck2_rect, "deck1": deck1_rect,
+        "t3": r3, "t2": r2, "t1": r1,                       # lists of rects actually assigned
+        "deck3": deck3_rect, "deck2": deck2_rect, "deck1": deck1_rect,  # deck pile rects
         "bank_chips": chip_centres,
     }
