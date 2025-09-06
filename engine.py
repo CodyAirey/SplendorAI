@@ -252,34 +252,61 @@ def pay_for_card(p: Player, card: Card) -> Dict[str, int]:
 
 def apply_purchase(state: GameState, row: int, col: int) -> str:
     p = state.players[state.active_idx]
-    table, deck, _tier = row_to_table_and_deck(state, row)
-    if not (0 <= col < len(table)):
-        return "Invalid BUY: card position not on table."
+    # --- Buying from reserve ---
+    if row == "R":
+        if not (0 <= col < len(p.reserved)):
+            return "Invalid BUY: reserve index."
+        card = p.reserved.pop(col)
 
-    card = table[col]
+    # --- Buying from table ---
+    else:
+        table, deck, _tier = row_to_table_and_deck(state, row)
+        if not (0 <= col < len(table)):
+            return "Invalid BUY: card position not on table."
+        card = table[col]
+
+        if not player_can_afford(p, card):
+            return "Cannot afford that card."
+
+        paid = pay_for_card(p, card)
+        for g, n in paid.items():
+            if n:
+                state.bank[g] = state.bank.get(g, 0) + n
+
+        # remove & refill
+        table.pop(col)
+        if deck:
+            table.insert(col, deck.pop(0))
+
+        # reward
+        bonus_gem = _norm(card.gemType)
+        if bonus_gem != "gold":
+            p.bonuses[bonus_gem] = p.bonuses.get(bonus_gem, 0) + 1
+        p.points += int(card.victoryPoints)
+
+        _check_for_noble_visit(state)
+        _maybe_trigger_endgame_after_action(state)
+        over_msg = _advance_turn(state)
+        return over_msg or "Purchased from table."
+
+    # --- Reserve purchase path ---
     if not player_can_afford(p, card):
-        return "Cannot afford that card."
+        return "Cannot afford that reserved card."
 
     paid = pay_for_card(p, card)
-    # Return payment to bank
     for g, n in paid.items():
-        if n: state.bank[g] = state.bank.get(g, 0) + n
+        if n:
+            state.bank[g] = state.bank.get(g, 0) + n
 
-    # Gain bonus and points
     bonus_gem = _norm(card.gemType)
     if bonus_gem != "gold":
         p.bonuses[bonus_gem] = p.bonuses.get(bonus_gem, 0) + 1
     p.points += int(card.victoryPoints)
 
-    # Remove from table; refill from deck if possible
-    table.pop(col)
-    if deck:
-        table.insert(col, deck.pop(0))
-
     _check_for_noble_visit(state)
     _maybe_trigger_endgame_after_action(state)
     over_msg = _advance_turn(state)
-    return over_msg or "Purchased."
+    return over_msg or "Purchased from reserve."
 
 
 def handle_coin_overflow(state: GameState, totalPlayerCoins) -> Dict[str, int]:
@@ -472,9 +499,8 @@ def apply_move(state: GameState, parsed_move) -> str:
 
     if kind == "BUY":
         row, col = payload
-        #TODO handle buying from reserve
-        return apply_purchase(state, int(row), int(col))
-    
+        return apply_purchase(state, row, col)
+        
     if kind == "SKIP":
         state.active_idx = (state.active_idx + 1) % len(state.players)
         return "Turn skipped."
