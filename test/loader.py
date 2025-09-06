@@ -65,30 +65,23 @@ def load_initial_state(playerCount: int) -> GameState:
     table_t2 = _deal_tableau(deck_t2, n=4)
     table_t3 = _deal_tableau(deck_t3, n=4)
 
-
-    # bank = {
-    #     "diamond": 7, "sapphire": 7, "emerald": 7,
-    #     "ruby": 7, "onyx": 7, "gold": 5
-    # }
-    if playerCount in [2, 3]:
+    if playerCount == 2:
         bank = {
             "diamond": 4, "sapphire": 4, "emerald": 4,
             "ruby": 4, "onyx": 4, "gold": 5
         }
-    elif playerCount == 4:
+    elif playerCount == 3:
         bank = {
             "diamond": 5, "sapphire": 5, "emerald": 5,
             "ruby": 5, "onyx": 5, "gold": 5
         }
+    elif playerCount == 4:
+        bank = {
+            "diamond": 7, "sapphire": 7, "emerald": 7,
+            "ruby": 7, "onyx": 7, "gold": 5
+        }
     else:
         raise ValueError("playerCount must be 2, 3, or 4")
-
-    # players = [
-    #     Player("P1", tokens={c:0 for c in bank}, bonuses={c:0 for c in bank if c!="gold"}),
-    #     Player("P2", tokens={c:0 for c in bank}, bonuses={c:0 for c in bank if c!="gold"}),
-    #     Player("P3", tokens={c:0 for c in bank}, bonuses={c:0 for c in bank if c!="gold"}),
-    #     Player("P4", tokens={c:0 for c in bank}, bonuses={c:0 for c in bank if c!="gold"}),
-    # ]
 
     players = []
     for i in range(playerCount):
