@@ -115,71 +115,12 @@ def apply_purchase(state: GameState, row: int, col: int) -> str:
     state.active_idx = (state.active_idx + 1) % len(state.players)
     return "Purchased."
 
-def apply_reserve(state: GameState, row: int, col: int) -> str:
+
+def handle_coin_overflow(state: GameState, totalPlayerCoins) -> Dict[str, int]:
     p = state.players[state.active_idx]
-    if len(p.reserved) >= 3:
-        return "You already have 3 reserved cards."
 
-    table, deck, _tier = row_to_table_and_deck(state, row)
-    if not (0 <= col < len(table)):
-        return "Invalid RESERVE: card position not on table."
-
-    # Take gold if available
-    if state.bank.get("gold", 0) > 0:
-        state.bank["gold"] -= 1
-        p.tokens["gold"] = p.tokens.get("gold", 0) + 1
-
-    # Move card from table to player's reserved; refill
-    card = table.pop(col)
-    p.reserved.append(card)
-    if deck:
-        table.insert(col, deck.pop(0))
-
-    # Advance turn
-    state.active_idx = (state.active_idx + 1) % len(state.players)
-    return "Reserved."
-
-def apply_take2(state: GameState, gem: str) -> str:
-    g = _norm(gem)
-    if g == "gold": return "Cannot take gold with TAKE action."
-    if state.bank.get(g, 0) < 4:
-        return f"Need ≥4 {g} in bank to take 2; only {state.bank.get(g,0)} available."
-    # Take exactly 2
-    state.bank[g] -= 2
-    p = state.players[state.active_idx]
-    p.tokens[g] = p.tokens.get(g, 0) + 2
-
-    state.active_idx = (state.active_idx + 1) % len(state.players)
-    return f"Took 2 {g}."
-
-
-def apply_take3(state: GameState, gems: Tuple[str, str, str]) -> str:
-    gs = [_norm(x) for x in gems]
-    if len(set(gs)) != 3 or "gold" in gs:
-        return "TAKE_3 must be 3 distinct non-gold colours."
-
-    # availability
-    for g in gs:
-        if state.bank.get(g, 0) <= 0:
-            return f"No {g} left in bank."
-
-    # take 1 each
-    p = state.players[state.active_idx]
-    for g in gs:
-        state.bank[g] -= 1
-        p.tokens[g] = p.tokens.get(g, 0) + 1
-
-    # 10-token cap (gold counts), but we will never discard gold
-    total = sum(p.tokens.get(x, 0) for x in GEM_ORDER_WITH_GOLD)
-    if total <= 10:
-        state.active_idx = (state.active_idx + 1) % len(state.players)
-        return f"Took {', '.join(gs)}."
-
-
-
-    # heuristic discard: try to keep tokens needed for purchasable cards
-    # TODO: move this logic out for other actions that can cause >10
-    over = total - 10
+     # heuristic discard: try to keep tokens needed for purchasable cards
+    over = totalPlayerCoins - 10
     returned = {g: 0 for g in GEM_ORDER}  # track only coloured returns
 
     # build purchasable set; sort by best value proposition
@@ -249,10 +190,88 @@ def apply_take3(state: GameState, gems: Tuple[str, str, str]) -> str:
             returned[g] += cnt
             over -= cnt
 
-    # Advance turn & report
-    state.active_idx = (state.active_idx + 1) % len(state.players)
-    discards_msg = ", ".join(f"{g}:{n}" for g, n in returned.items() if n > 0)
-    return f"Took {', '.join(gs)}." + (f" Discarded ({discards_msg})." if discards_msg else "")
+def apply_reserve(state: GameState, row: int, col: int) -> str:
+    p = state.players[state.active_idx]
+    if len(p.reserved) >= 3:
+        return "You already have 3 reserved cards."
+
+    table, deck, _tier = row_to_table_and_deck(state, row)
+    if not (0 <= col < len(table)):
+        return "Invalid RESERVE: card position not on table."
+
+    # Take gold if available
+    if state.bank.get("gold", 0) > 0:
+        state.bank["gold"] -= 1
+        p.tokens["gold"] = p.tokens.get("gold", 0) + 1
+
+    # Move card from table to player's reserved; refill
+    card = table.pop(col)
+    p.reserved.append(card)
+    if deck:
+        table.insert(col, deck.pop(0))
+
+
+    total = sum(p.tokens.get(x, 0) for x in GEM_ORDER_WITH_GOLD)
+
+    if total <= 10:
+        # Advance turn
+        state.active_idx = (state.active_idx + 1) % len(state.players)
+        return "Reserved, +1 Gold."
+    else:
+        returned = handle_coin_overflow(state, total)
+        discards_msg = ", ".join(f"{g}:{n}" for g, n in returned.items() if n > 0)
+        return "Reserved, +1 Gold." + (f" Discarded ({discards_msg})." if discards_msg else "")
+
+
+def apply_take2(state: GameState, gem: str) -> str:
+    g = _norm(gem)
+    if g == "gold": return "Cannot take gold with TAKE action."
+    if state.bank.get(g, 0) < 4:
+        return f"Need ≥4 {g} in bank to take 2; only {state.bank.get(g,0)} available."
+    # Take exactly 2
+    state.bank[g] -= 2
+    p = state.players[state.active_idx]
+    p.tokens[g] = p.tokens.get(g, 0) + 2
+
+    total = sum(p.tokens.get(x, 0) for x in GEM_ORDER_WITH_GOLD)
+
+    if total <= 10:
+        state.active_idx = (state.active_idx + 1) % len(state.players)
+        return f"Took 2 {g}."
+    else:
+        returned = handle_coin_overflow(state, total)
+        discards_msg = ", ".join(f"{g}:{n}" for g, n in returned.items() if n > 0)
+        return f"Took 2 {g}." + (f" Discarded ({discards_msg})." if discards_msg else "")
+
+
+def apply_take3(state: GameState, gems: Tuple[str, str, str]) -> str:
+    gs = [_norm(x) for x in gems]
+    if len(set(gs)) != 3 or "gold" in gs:
+        return "TAKE_3 must be 3 distinct non-gold colours."
+
+    # availability
+    for g in gs:
+        if state.bank.get(g, 0) <= 0:
+            return f"No {g} left in bank."
+
+    # take 1 each
+    p = state.players[state.active_idx]
+    for g in gs:
+        state.bank[g] -= 1
+        p.tokens[g] = p.tokens.get(g, 0) + 1
+
+    # 10-token cap (gold counts), but we will never discard gold
+    total = sum(p.tokens.get(x, 0) for x in GEM_ORDER_WITH_GOLD)
+
+    if total <= 10:
+        state.active_idx = (state.active_idx + 1) % len(state.players)
+        return f"Took {', '.join(gs)}."
+    else:
+        returned = handle_coin_overflow(state, total)
+        # Advance turn & report
+        state.active_idx = (state.active_idx + 1) % len(state.players)
+        discards_msg = ", ".join(f"{g}:{n}" for g, n in returned.items() if n > 0)
+        return f"Took {', '.join(gs)}." + (f" Discarded ({discards_msg})." if discards_msg else "")
 
 
 # --- public API ----------------------------------------------------------
@@ -290,5 +309,9 @@ def apply_move(state: GameState, parsed_move) -> str:
     
     #TODO: think about times when only 2 unique gems are left.... currently softlocks game
     # don't wanna make it complex for model training
+    if state.bank.get("diamond", 0) + state.bank.get("sapphire", 0) + state.bank.get("emerald", 0) + state.bank.get("ruby", 0) + state.bank.get("onyx", 0) < 3 or (state.bank.get("diamond", 0) < 2 and state.bank.get("sapphire", 0) < 2 and state.bank.get("emerald", 0) < 2 and state.bank.get("ruby", 0) < 2 and state.bank.get("onyx", 0) < 2):
+          state.active_idx = (state.active_idx + 1) % len(state.players)
+          return "Turn skipped."
+    
 
     return "Unknown move."
