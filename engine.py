@@ -182,7 +182,7 @@ def apply_take3(state: GameState, gems: Tuple[str, str, str]) -> str:
     over = total - 10
     returned = {g: 0 for g in GEM_ORDER}  # track only coloured returns
 
-    # --- build purchasable set (table only); sort by best value proposition
+    # build purchasable set; sort by best value proposition
     purchasable = []
     #add tabe cards
     for row in (0, 1, 2):
@@ -204,7 +204,8 @@ def apply_take3(state: GameState, gems: Tuple[str, str, str]) -> str:
                 purchasable.append((value_prop, c))
     purchasable.sort(key=lambda t: t[0])
 
-    # --- phase 1: discard only "surplus" vs. each purchasable card 
+    # Ideal option - heuristic: discard only "surplus" vs. each purchasable card, in of value order
+    # (randomize gem order to avoid bias)
     for _, card in purchasable:
         if over <= 0:
             break
@@ -233,7 +234,7 @@ def apply_take3(state: GameState, gems: Tuple[str, str, str]) -> str:
                 returned[g] += can_put
                 over -= can_put
 
-    # --- phase 2 (fallback): still over → shave largest COLOURED piles
+    # Option 2 (fallback): still over → shave largest COLOURED piles
     if over > 0:
         piles = sorted(GEM_ORDER, key=lambda g: p.tokens.get(g, 0), reverse=True)
         for g in piles:
@@ -286,5 +287,8 @@ def apply_move(state: GameState, parsed_move) -> str:
     if kind == "SKIP":
         state.active_idx = (state.active_idx + 1) % len(state.players)
         return "Turn skipped."
+    
+    #TODO: think about times when only 2 unique gems are left.... currently softlocks game
+    # don't wanna make it complex for model training
 
     return "Unknown move."
