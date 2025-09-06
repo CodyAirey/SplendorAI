@@ -1,316 +1,290 @@
 # engine.py
-"""
-Splendor rules/engine layer:
-- Random starting player
-- Four actions (take3, take2, reserve, buy)
-- Validates + applies, refills tableau, rotates turns
-- Parser-friendly adapter (apply_move_str)
-"""
-
-from __future__ import annotations
+from typing import Dict, List, Tuple
+from game_state import GameState, Player
+from card import Card
 import random
-from typing import Dict, List, Tuple, Optional, Iterable
 
-import move_parser
+# --- helpers -------------------------------------------------------------
 
-
-# ---- Colour helpers ---------------------------------------------------------
-
-COLORS_NO_GOLD = ["diamond", "sapphire", "emerald", "ruby", "onyx"]
-ALL_COLORS     = COLORS_NO_GOLD + ["gold"]
-LETTER_TO_COLOR = {
-    "D": "diamond", "S": "sapphire", "E": "emerald", "R": "ruby", "O": "onyx", "G": "gold"
+LOW = {
+    "diamond": "diamond", "sapphire": "sapphire", "emerald": "emerald",
+    "ruby": "ruby", "onyx": "onyx", "gold": "gold",
+    "Diamond": "diamond", "Sapphire": "sapphire", "Emerald": "emerald",
+    "Ruby": "ruby", "Onyx": "onyx", "Gold": "gold",
+    "D": "diamond", "S": "sapphire", "E": "emerald", "R": "ruby", "O": "onyx", "G": "gold",
 }
 
+GEM_ORDER = ["diamond", "sapphire", "emerald", "ruby", "onyx"]
+GEM_ORDER_WITH_GOLD = GEM_ORDER + ["gold"]
 
-def _norm_colour(s: str) -> str:
-    return s.strip().lower()
+def _norm(c: str) -> str:
+    return LOW.get(c, c.strip().lower())
+
+def card_cost_lc(card: Card) -> Dict[str, int]:
+    # Card.cost is a CardCost exposing items() like ("Ruby", n)
+    return {_norm(k): int(v) for k, v in card.cost.items() if int(v) > 0}
+
+def row_to_table_and_deck(state: GameState, row: int) -> Tuple[List[Card], List[Card], int]:
+    # UI rows are T3(top)=0, T2=1, T1=2
+    if row == 0:   return state.table_t3, state.deck_t3, 3
+    if row == 1:   return state.table_t2, state.deck_t2, 2
+    if row == 2:   return state.table_t1, state.deck_t1, 1
+    raise ValueError("Row must be 0,1,2")
+
+def _effective_need_after_bonuses(card, bonuses: Dict[str, int]) -> Dict[str, int]:
+    """Need per color after applying permanent bonuses (no gold here)."""
+    eff = {}
+    for g, v in card_cost_lc(card).items():  # normalized keys
+        if g == "gold":
+            continue
+        eff[g] = max(0, v - bonuses.get(g, 0))
+    # ensure all base colours exist
+    for g in GEM_ORDER:
+        eff.setdefault(g, 0)
+    return eff
+
+def _gold_required_for_card(card, tokens: Dict[str,int], bonuses: Dict[str,int]) -> int:
+    """Minimal gold needed to make up remaining deficits after using colored tokens."""
+    eff = _effective_need_after_bonuses(card, bonuses)
+    need_gold = 0
+    for g in GEM_ORDER:
+        if g == "gold":
+            continue
+        deficit = max(0, eff[g] - tokens.get(g, 0))
+        need_gold += deficit
+    return need_gold
+
+def player_can_afford(p: Player, card: Card) -> bool:
+    cost = card_cost_lc(card)
+    gold = p.tokens.get("gold", 0)
+    deficit = 0
+    for gem, need in cost.items():
+        need_eff = max(0, need - p.bonuses.get(gem, 0))
+        have = p.tokens.get(gem, 0)
+        if have < need_eff:
+            deficit += (need_eff - have)
+    return deficit <= gold
+
+def pay_for_card(p: Player, card: Card) -> Dict[str, int]:
+    """Returns dict of tokens to return to bank after payment; mutates player tokens."""
+    paid = {"diamond":0,"sapphire":0,"emerald":0,"ruby":0,"onyx":0,"gold":0}
+    cost = card_cost_lc(card)
+
+    # First, use colored tokens up to effective need
+    for gem, need in cost.items():
+        need_eff = max(0, need - p.bonuses.get(gem, 0))
+        use = min(p.tokens.get(gem, 0), need_eff)
+        if use:
+            p.tokens[gem] = p.tokens.get(gem, 0) - use
+            paid[gem] += use
+        rem = need_eff - use
+        if rem > 0:
+            # Use gold as wild
+            use_gold = min(p.tokens.get("gold", 0), rem)
+            p.tokens["gold"] = p.tokens.get("gold", 0) - use_gold
+            paid["gold"] += use_gold
+    return paid
+
+def apply_purchase(state: GameState, row: int, col: int) -> str:
+    p = state.players[state.active_idx]
+    table, deck, _tier = row_to_table_and_deck(state, row)
+    if not (0 <= col < len(table)):
+        return "Invalid BUY: card position not on table."
+
+    card = table[col]
+    if not player_can_afford(p, card):
+        return "Cannot afford that card."
+
+    paid = pay_for_card(p, card)
+    # Return payment to bank
+    for g, n in paid.items():
+        if n: state.bank[g] = state.bank.get(g, 0) + n
+
+    # Gain bonus and points
+    bonus_gem = _norm(card.gemType)
+    if bonus_gem != "gold":
+        p.bonuses[bonus_gem] = p.bonuses.get(bonus_gem, 0) + 1
+    p.points += int(card.victoryPoints)
+
+    # Remove from table; refill from deck if possible
+    table.pop(col)
+    if deck:
+        table.insert(col, deck.pop(0))
+
+    # Advance turn
+    state.active_idx = (state.active_idx + 1) % len(state.players)
+    return "Purchased."
+
+def apply_reserve(state: GameState, row: int, col: int) -> str:
+    p = state.players[state.active_idx]
+    if len(p.reserved) >= 3:
+        return "You already have 3 reserved cards."
+
+    table, deck, _tier = row_to_table_and_deck(state, row)
+    if not (0 <= col < len(table)):
+        return "Invalid RESERVE: card position not on table."
+
+    # Take gold if available
+    if state.bank.get("gold", 0) > 0:
+        state.bank["gold"] -= 1
+        p.tokens["gold"] = p.tokens.get("gold", 0) + 1
+
+    # Move card from table to player's reserved; refill
+    card = table.pop(col)
+    p.reserved.append(card)
+    if deck:
+        table.insert(col, deck.pop(0))
+
+    # Advance turn
+    state.active_idx = (state.active_idx + 1) % len(state.players)
+    return "Reserved."
+
+def apply_take2(state: GameState, gem: str) -> str:
+    g = _norm(gem)
+    if g == "gold": return "Cannot take gold with TAKE action."
+    if state.bank.get(g, 0) < 4:
+        return f"Need ≥4 {g} in bank to take 2; only {state.bank.get(g,0)} available."
+    # Take exactly 2
+    state.bank[g] -= 2
+    p = state.players[state.active_idx]
+    p.tokens[g] = p.tokens.get(g, 0) + 2
+
+    state.active_idx = (state.active_idx + 1) % len(state.players)
+    return f"Took 2 {g}."
 
 
-# ---- Engine ----------------------------------------------------------------
+def apply_take3(state: GameState, gems: Tuple[str, str, str]) -> str:
+    gs = [_norm(x) for x in gems]
+    if len(set(gs)) != 3 or "gold" in gs:
+        return "TAKE_3 must be 3 distinct non-gold colours."
 
-class SplendorEngine:
-    """
-    Stateless-ish executor operating on a mutable GameState (passed in or held by ref).
-    Expects GameState to have:
-      - bank: Dict[str,int] with keys lowercased colours (diamond,...,gold)
-      - deck_t1, deck_t2, deck_t3: List[Card]
-      - table_t1, table_t2, table_t3: List[Card] (face-up)
-      - nobles: List[Noble]   (not used here yet)
-      - players: List[Player] with fields: tokens:Dict, bonuses:Dict, points:int, reserved:List[Card]
-      - active_idx: int
-    Card model with fields: gemType (str), victoryPoints (int), cost (CardCost), rank (1..3)
-    """
+    # availability
+    for g in gs:
+        if state.bank.get(g, 0) <= 0:
+            return f"No {g} left in bank."
 
-    def __init__(self, state):
-        self.state = state
-        # Map row index (parser/UI) to (table, deck). Row 0=Tier3, 1=Tier2, 2=Tier1 (matches your UI)
-        self._row_map = {
-            0: ("table_t3", "deck_t3", 3),
-            1: ("table_t2", "deck_t2", 2),
-            2: ("table_t1", "deck_t1", 1),
-        }
+    # take 1 each
+    p = state.players[state.active_idx]
+    for g in gs:
+        state.bank[g] -= 1
+        p.tokens[g] = p.tokens.get(g, 0) + 1
 
-    # -------------------- Start / Turn --------------------------------------
+    # 10-token cap (gold counts), but we will never discard gold
+    total = sum(p.tokens.get(x, 0) for x in GEM_ORDER_WITH_GOLD)
+    if total <= 10:
+        state.active_idx = (state.active_idx + 1) % len(state.players)
+        return f"Took {', '.join(gs)}."
 
-    def start_game(self, seed: Optional[int] = None) -> None:
-        """Pick a random starting player."""
-        if seed is not None:
-            rnd = random.Random(seed)
-            self.state.active_idx = rnd.randrange(len(self.state.players))
-        else:
-            self.state.active_idx = random.randrange(len(self.state.players))
 
-    def _next_player(self) -> None:
-        self.state.active_idx = (self.state.active_idx + 1) % len(self.state.players)
 
-    # -------------------- Public “apply” API (structured) -------------------
+    # heuristic discard: try to keep tokens needed for purchasable cards
+    # TODO: move this logic out for other actions that can cause >10
+    over = total - 10
+    returned = {g: 0 for g in GEM_ORDER}  # track only coloured returns
 
-    def take_three(self, colours: Iterable[str]) -> Tuple[bool, str]:
-        """Take 3 distinct non-gold colours (each pile must have at least 1)."""
-        cols = [ _norm_colour(c) for c in colours ]
-        if len(cols) != 3 or len(set(cols)) != 3:
-            return False, "Pick exactly 3 distinct colours."
+    # --- build purchasable set (table only); sort by best value proposition
+    purchasable = []
+    #add tabe cards
+    for row in (0, 1, 2):
+        table, _, _ = row_to_table_and_deck(state, row)
+        for c in table:
+            if player_can_afford(p, c):
+                value_prop = c.getCostPerPoint() if hasattr(c, "getCostPerPoint") else (
+                    (sum(card_cost_lc(c).values()) / max(1, int(getattr(c, "victoryPoints", 0))))
+                    if int(getattr(c, "victoryPoints", 0)) > 0 else float("inf")
+                )
+                purchasable.append((value_prop, c))
+    #add reserved cards
+    for c in state.players[state.active_idx].reserved:
+        if player_can_afford(p, c):
+                value_prop = c.getCostPerPoint() if hasattr(c, "getCostPerPoint") else (
+                    (sum(card_cost_lc(c).values()) / max(1, int(getattr(c, "victoryPoints", 0))))
+                    if int(getattr(c, "victoryPoints", 0)) > 0 else float("inf")
+                )
+                purchasable.append((value_prop, c))
+    purchasable.sort(key=lambda t: t[0])
 
-        if any(c not in COLORS_NO_GOLD for c in cols):
-            return False, "Gold cannot be taken in Take-3, and colours must be valid."
+    # --- phase 1: discard only "surplus" vs. each purchasable card 
+    for _, card in purchasable:
+        if over <= 0:
+            break
 
-        bank = self.state.bank
-        if any(bank.get(c, 0) <= 0 for c in cols):
-            return False, "One or more selected piles are empty."
+        eff_need = _effective_need_after_bonuses(card, p.bonuses)
+        gold_req = _gold_required_for_card(card, p.tokens, p.bonuses)  # gold needed to cover remaining deficits
 
-        # Apply
-        p = self.state.players[self.state.active_idx]
-        for c in cols:
-            bank[c] -= 1
-            p.tokens[c] = p.tokens.get(c, 0) + 1
+        # Minimal spend to afford this card:
+        min_spend = {g: 0 for g in GEM_ORDER_WITH_GOLD}
+        for g in GEM_ORDER:
+            min_spend[g] = min(p.tokens.get(g, 0), eff_need[g])
+        min_spend["gold"] = min(p.tokens.get("gold", 0), gold_req)
 
-        self._next_player()
-        return True, "Took 3 different tokens."
+        # Surplus per COLOURED gem = tokens - min_spend (never consider gold for discard)
+        surplus = {g: max(0, p.tokens.get(g, 0) - min_spend[g]) for g in GEM_ORDER}
 
-    def take_two(self, colour: str) -> Tuple[bool, str]:
-        """Take 2 of the same colour (only if that pile has >= 4 before taking)."""
-        c = _norm_colour(colour)
-        if c not in COLORS_NO_GOLD:
-            return False, "Cannot take gold or an unknown colour for Take-2."
+        order = GEM_ORDER[:]     # coloured only
+        random.shuffle(order)
+        for g in order:
+            if over <= 0:
+                break
+            can_put = min(surplus[g], over)
+            if can_put > 0:
+                p.tokens[g] -= can_put
+                state.bank[g] = state.bank.get(g, 0) + can_put
+                returned[g] += can_put
+                over -= can_put
 
-        bank = self.state.bank
-        if bank.get(c, 0) < 4:
-            return False, "Pile must have at least 4 tokens before taking 2."
-
-        # Apply
-        p = self.state.players[self.state.active_idx]
-        bank[c] -= 2
-        p.tokens[c] = p.tokens.get(c, 0) + 2
-
-        self._next_player()
-        return True, "Took 2 of the same colour."
-
-    def reserve_from_table(self, row: int, col: int) -> Tuple[bool, str]:
-        """
-        Reserve one face-up card from the tableau (row: 0=Tier3,1=Tier2,2=Tier1).
-        - Move card to player's reserve (max 3).
-        - Take 1 gold if available.
-        - Refill the tableau slot from the corresponding deck if possible; else the row shrinks.
-        """
-        ok, msg, table, deck, _tier = self._get_table_ref(row)
-        if not ok:
-            return False, msg
-
-        if not (0 <= col < len(table)):
-            return False, "That card slot is empty."
-
-        p = self.state.players[self.state.active_idx]
-        if len(p.reserved) >= 3:
-            return False, "Reserve limit reached (3)."
-
-        card = table[col]
-
-        # Move to reserve
-        p.reserved.append(card)
-
-        # Give gold if available
-        if self.state.bank.get("gold", 0) > 0:
-            self.state.bank["gold"] -= 1
-            p.tokens["gold"] = p.tokens.get("gold", 0) + 1
-
-        # Refill that face-up slot
-        self._refill_slot(table, deck, col)
-
-        self._next_player()
-        return True, "Reserved the card."
-
-    def buy_from_table(self, row: int, col: int) -> Tuple[bool, str]:
-        ok, msg, table, deck, _tier = self._get_table_ref(row)
-        if not ok:
-            return False, msg
-        if not (0 <= col < len(table)):
-            return False, "That card slot is empty."
-        return self._buy_card(table, deck, col)
-
-    def buy_reserved(self, reserve_index: int) -> Tuple[bool, str]:
-        p = self.state.players[self.state.active_idx]
-        if not (0 <= reserve_index < len(p.reserved)):
-            return False, "No such reserved card."
-        card = p.reserved[reserve_index]
-        # Try to pay
-        ok, msg, payment = self._compute_payment(p, card)
-        if not ok:
-            return False, msg
-
-        self._apply_payment(p, payment)
-        self._acquire_card(p, card)
-        # Remove from reserves
-        p.reserved.pop(reserve_index)
-
-        self._next_player()
-        return True, "Purchased reserved card."
-
-    # -------------------- Parser adapter (optional) -------------------------
-
-    def apply_move_str(self, move_str: str) -> Tuple[bool, str]:
-        """
-        Accepts strings like:
-          T(DSE)       -> take_three
-          T(DD)        -> take_two
-          R(1,3)       -> reserve_from_table(row=1,col=3)
-          B(2,0)       -> buy_from_table(row=2,col=0)
-          B(R,1)       -> buy_reserved(index=1)
-        """
-        kind, payload = None, None
-        if move_parser:
-            try:
-                kind, payload = move_parser.parse_move(move_str)
-            except Exception as e:
-                return False, f"Invalid move format: {e}"
-        else:
-            # Minimal fallback if parser module not available
-            return False, "Parser module not found; use structured methods."
-
-        # ---- TAKE 2 or TAKE 3
-        if kind == "TAKE_2":
-            gem_letter = payload  # e.g., "D"
-            colour = LETTER_TO_COLOR.get(gem_letter)
-            if not colour:
-                return False, "Unknown gem letter."
-            return self.take_two(colour)
-
-        if kind == "TAKE_3":
-            letters = payload  # tuple like ("D","S","E")
-            colours = []
-            for L in letters:
-                c = LETTER_TO_COLOR.get(L)
-                if not c or c == "gold":
-                    return False, "Invalid colours for Take-3."
-                colours.append(c)
-            return self.take_three(colours)
-
-        # ---- BUY
-        if kind == "BUY":
-            row, col = payload
-            # Support B(R,idx) for buying from reserve
-            if isinstance(row, str) and row.upper() == "R":
-                try:
-                    idx = int(col)
-                except Exception:
-                    return False, "Invalid reserve index."
-                return self.buy_reserved(idx)
-            # Normal table buy
-            try:
-                r = int(row); c = int(col)
-            except Exception:
-                return False, "Row/col must be integers (or R,<idx> for reserved)."
-            return self.buy_from_table(r, c)
-
-        # ---- RESERVE
-        if kind == "RESERVE":
-            row, col = payload
-            try:
-                r = int(row); c = int(col)
-            except Exception:
-                return False, "Row/col must be integers."
-            return self.reserve_from_table(r, c)
-
-        return False, "Unknown move."
-
-    # -------------------- Internals -----------------------------------------
-
-    def _get_table_ref(self, row: int):
-        if row not in self._row_map:
-            return False, "Row must be 0 (T3), 1 (T2), or 2 (T1).", None, None, None
-        table_name, deck_name, tier = self._row_map[row]
-        table = getattr(self.state, table_name)
-        deck  = getattr(self.state, deck_name)
-        return True, "", table, deck, tier
-
-    def _refill_slot(self, table: List, deck: List, idx: int) -> None:
-        """Refill a specific tableau index from deck, else shrink the row."""
-        if deck:
-            # Replace the same slot
-            table[idx] = deck.pop(0)
-        else:
-            # Remove the slot entirely
-            table.pop(idx)
-
-    def _buy_card(self, table: List, deck: List, col: int) -> Tuple[bool, str]:
-        p = self.state.players[self.state.active_idx]
-        card = table[col]
-
-        ok, msg, payment = self._compute_payment(p, card)
-        if not ok:
-            return False, msg
-
-        self._apply_payment(p, payment)
-        self._acquire_card(p, card)
-
-        # Refill that face-up slot
-        self._refill_slot(table, deck, col)
-
-        self._next_player()
-        return True, "Purchased."
-
-    def _compute_payment(self, player, card) -> Tuple[bool, str, Dict[str,int]]:
-        """
-        Compute how many coloured tokens + gold are needed after bonuses.
-        Returns (ok, msg, payment_dict[all colours]).
-        """
-        # Build required after bonuses
-        need_by = {c: 0 for c in ALL_COLORS}
-        # Card cost keys are title-cased; normalise to lowercase
-        for k, v in card.cost.items():
-            c = _norm_colour(k)
-            if v <= 0: 
+    # --- phase 2 (fallback): still over → shave largest COLOURED piles
+    if over > 0:
+        piles = sorted(GEM_ORDER, key=lambda g: p.tokens.get(g, 0), reverse=True)
+        for g in piles:
+            if over <= 0:
+                break
+            have = p.tokens.get(g, 0)
+            if have <= 0:
                 continue
-            base = int(v)
-            bonus = int(player.bonuses.get(c, 0))
-            need_by[c] = max(0, base - bonus)
+            cnt = min(have, over)
+            p.tokens[g] -= cnt
+            state.bank[g] = state.bank.get(g, 0) + cnt
+            returned[g] += cnt
+            over -= cnt
 
-        # Spend coloured tokens first
-        pay = {c: 0 for c in ALL_COLORS}
-        remaining = 0
-        for c in COLORS_NO_GOLD:
-            use = min(player.tokens.get(c, 0), need_by[c])
-            pay[c] = use
-            remaining += (need_by[c] - use)
+    # Advance turn & report
+    state.active_idx = (state.active_idx + 1) % len(state.players)
+    discards_msg = ", ".join(f"{g}:{n}" for g, n in returned.items() if n > 0)
+    return f"Took {', '.join(gs)}." + (f" Discarded ({discards_msg})." if discards_msg else "")
 
-        # Fill remainder with gold
-        gold_avail = player.tokens.get("gold", 0)
-        if remaining > gold_avail:
-            return False, "Cannot afford (not enough gold).", {}
-        pay["gold"] = remaining
-        return True, "OK", pay
 
-    def _apply_payment(self, player, payment: Dict[str,int]) -> None:
-        """Return tokens to bank based on computed payment."""
-        for c, n in payment.items():
-            if not n:
-                continue
-            player.tokens[c] -= n
-            self.state.bank[c] += n
+# --- public API ----------------------------------------------------------
 
-    def _acquire_card(self, player, card) -> None:
-        """Grant the card's bonus and points to the player."""
-        bonus_colour = _norm_colour(card.gemType)
-        if bonus_colour in COLORS_NO_GOLD:
-            player.bonuses[bonus_colour] = player.bonuses.get(bonus_colour, 0) + 1
-        player.points += int(card.victoryPoints)
+def apply_move(state: GameState, parsed_move) -> str:
+    """
+    parsed_move comes from your parse_move(), e.g.:
+      ("TAKE_2", "D")
+      ("TAKE_3", ("D","S","E"))
+      ("BUY", (row, col))
+      ("RESERVE", (row, col))
+    Returns a short status string; mutates state in place.
+    """
+    kind, payload = parsed_move
+
+    if kind == "TAKE_2":
+        return apply_take2(state, payload)
+
+    if kind == "TAKE_3":
+        # payload is a 3-tuple of gem letters/names
+        return apply_take3(state, payload)
+
+    if kind == "RESERVE":
+        row, col = payload
+        return apply_reserve(state, int(row), int(col))
+
+    if kind == "BUY":
+        row, col = payload
+        #TODO handle buying from reserve
+        return apply_purchase(state, int(row), int(col))
+    
+    if kind == "SKIP":
+        state.active_idx = (state.active_idx + 1) % len(state.players)
+        return "Turn skipped."
+
+    return "Unknown move."
