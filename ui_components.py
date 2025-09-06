@@ -30,6 +30,8 @@ COLOUR_TO_RGB = {
     "ruby": (220,60,60), "onyx": (40,40,40), "gold": (240,210,60),
 }
 
+SHOW_CARD_VALUE_PROP = True  # toggle overlay on/off
+
 # Layout
 MARGIN, PANEL_W = 16, PANEL_PLAYERS_W + RESERVE_W
 BOARD_LEFT, BOARD_RIGHT = MARGIN, W - PANEL_W - 2*MARGIN
@@ -97,6 +99,34 @@ def _draw_cost_pip(surface, x, y, colour, value):
     txt = FONT_SMALL.render(str(value), True, BLACK)
     surface.blit(txt, (x+20, y))
 
+def _compute_value_prop(card) -> float | None:
+    """Return cost per victory point (lower is better). None if VP==0 or undefined."""
+    try:
+        # Prefer model's own method if present
+        if hasattr(card, "getCostPerPoint"):
+            val = card.getCostPerPoint()
+            return None if val == float("inf") else float(val)
+        # Fallback: compute from cost dict-like
+        total_cost = sum(int(v) for _, v in card.cost.items())
+        vicPoints = int(getattr(card, "victoryPoints", 0))
+        if vicPoints <= 0:
+            return None
+        return total_cost / vicPoints
+    except Exception:
+        return None
+    
+def _draw_card_value_prop(surface, card):
+    """Subtle 'cost per VP' label in top-right under the header strip."""
+    if not SHOW_CARD_VALUE_PROP:
+        return
+    val = _compute_value_prop(card)
+    if val is None:
+        return
+    label = FONT_SMALL.render(f"{val:.2f} c/VP", True, DARKGREY)
+    # place just below the header, aligned to the right edge
+    r = label.get_rect(topright=(card.rect.right - 6, card.rect.y + 30))
+    surface.blit(label, r)
+
 
 # ------------------------ Rendering ------------------------
 
@@ -108,9 +138,8 @@ def draw_token_chip(surface, centre: Tuple[int,int], colour: str, label: str):
         TOKEN_R,
         label,
         BLACK if colour != "onyx" else WHITE,
-        font=FONT_BIG   # bigger font for bank chips
+        font=FONT_BIG 
     )
-
 
 def draw_card(surface, card):
     pygame.draw.rect(surface, WHITE, card.rect, border_radius=8)
@@ -118,7 +147,7 @@ def draw_card(surface, card):
 
     bonus = card.gemType.lower()
     points = card.victoryPoints
-    cost = {k.lower(): v for k,v in card.cost.items() if v > 0}
+    cost = {k.lower(): v for k, v in card.cost.items() if v > 0}
 
     # Header
     header = pygame.Rect(card.rect.x, card.rect.y, card.rect.w, 28)
@@ -129,8 +158,13 @@ def draw_card(surface, card):
 
     tier_val = card.rank or "?"
     tier_colour = WHITE if bonus == "onyx" else BLACK
-    surface.blit(FONT_SMALL.render(f"T{tier_val}", True, tier_colour), (card.rect.right-28, card.rect.y+6))
+    surface.blit(FONT_SMALL.render(f"T{tier_val}", True, tier_colour),
+                 (card.rect.right-28, card.rect.y+6))
 
+    # Value proposition
+    _draw_card_value_prop(surface, card)
+
+    # Costs
     y = card.rect.y + 126
     for c, v in sorted(cost.items()):
         _draw_cost_pip(surface, card.rect.x+10, y+2, c, v)
@@ -177,7 +211,7 @@ def draw_player_panel(surface, players: List[Player], active_idx: int, x0: int, 
     for idx, p in enumerate(players[:4]):
         block = pygame.Rect(x0+12, y0+30+idx*(block_h+pad), PANEL_PLAYERS_W-24, block_h)
         pygame.draw.rect(surface, WHITE, block, border_radius=8)
-        pygame.draw.rect(surface, DARKGREY, block, 2, border_radius=8)
+        pygame.draw.rect(surface, GOLD if idx==active_idx else DARKGREY, block, 2, border_radius=8)
 
         prefix = "> " if idx==active_idx else ""
         surface.blit(FONT.render(f"{prefix}{p.name}  (Pts {p.points})", True, BLACK), (block.x+12, block.y+8))
