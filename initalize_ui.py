@@ -49,3 +49,63 @@ def init_ui(state: GameState):
         pygame.display.flip()
 
     pygame.quit()
+
+
+
+def draw_once(state: GameState, status_text: str = "Initialised game"):
+    """
+    Render a single frame based on the current state.
+    Recomputes layout every call so tableau/deck changes are reflected.
+    """
+    # Layout depends on current tableau lengths & player count
+    layout = layout_board(state.table_t1, state.table_t2, state.table_t3,
+                          state.nobles, len(state.players))
+
+    SCREEN.fill((34, 120, 70))
+
+    # Nobles
+    for nb in state.nobles[:len(layout["nobles"])]:
+        draw_noble(SCREEN, nb)
+
+    # Face-up cards on table (whatever is currently there)
+    for c in state.table_t3 + state.table_t2 + state.table_t1:
+        draw_card(SCREEN, c)
+
+    # Deck piles (only draw if deck still has cards)
+    if state.deck_t3: draw_deck_pile(SCREEN, layout["deck3"], 3, len(state.deck_t3))
+    if state.deck_t2: draw_deck_pile(SCREEN, layout["deck2"], 2, len(state.deck_t2))
+    if state.deck_t1: draw_deck_pile(SCREEN, layout["deck1"], 1, len(state.deck_t1))
+
+    # Bottom bank
+    draw_bank_on_board(SCREEN, layout["bank_chips"], state.bank)
+
+    # Status strip
+    status = FONT.render(status_text, True, WHITE)
+    SCREEN.blit(status, (MARGIN, H - STATUS_H + 10))
+
+    # Right panel: players + reserves
+    panel_x = W - PANEL_W - MARGIN
+    draw_player_panel(SCREEN, state.players, state.active_idx, panel_x, MARGIN)
+
+    pygame.display.flip()
+
+
+def run_ui(state: GameState, status_provider=None):
+    """
+    Interactive loop version (replacement for init_ui):
+    - Recomputes layout each frame (so UI reflects state changes).
+    - status_provider: optional callable -> str for dynamic status text.
+      If None, shows a static "Initialised game".
+    """
+    running = True
+    while running:
+        CLOCK.tick(FPS)
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            # (Hook input here later; keep rendering logic separate)
+
+        status_text = status_provider() if callable(status_provider) else "Initialised game"
+        draw_once(state, status_text)
+
+    pygame.quit()
