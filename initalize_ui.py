@@ -1,6 +1,7 @@
 # ui.py
 import pygame
 from game_state import GameState
+from move_parser import parse_move
 from ui_components import (
     draw_card, draw_noble, draw_deck_pile,
     draw_bank_on_board, draw_player_panel,
@@ -92,20 +93,54 @@ def draw_once(state: GameState, status_text: str = "Initialised game"):
 
 def run_ui(state: GameState, status_provider=None):
     """
-    Interactive loop version (replacement for init_ui):
-    - Recomputes layout each frame (so UI reflects state changes).
-    - status_provider: optional callable -> str for dynamic status text.
-      If None, shows a static "Initialised game".
+    Interactive loop with a tiny command-line:
+      - Type commands matching your parser, e.g. T(DSE), B(1,2), R(0,3), etc.
+      - Enter to submit (parses via parse_move)
+      - Backspace to edit; Esc to clear
+    Rendering/look stays identical; only the status strip text changes.
     """
     running = True
+    cmd_buffer = ""
+    last_result = ""   # message after last Enter
+
     while running:
         CLOCK.tick(FPS)
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
-            # (Hook input here later; keep rendering logic separate)
 
-        status_text = status_provider() if callable(status_provider) else "Initialised game"
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    cmd_buffer = ""
+                    last_result = ""
+                elif event.key == pygame.K_BACKSPACE:
+                    cmd_buffer = cmd_buffer[:-1]
+                elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                    text = cmd_buffer.strip()
+                    if text:
+                        try:
+                            parsed = parse_move(text)
+                            last_result = f"OK → {parsed}"
+                            # TODO: hand off to controller/executor here, e.g.:
+                            # controller.submit(parsed, state)
+                            # then re-deal/redraw via draw_once(state, ...)
+                        except Exception as e:
+                            last_result = f"Error: {e}"
+                    cmd_buffer = ""
+                else:
+                    ch = event.unicode
+                    # allow only characters your grammar needs
+                    if ch and (ch.isalnum() or ch in "(), -"):
+                        cmd_buffer += ch
+
+        # If a custom status provider is given, append its message on the right
+        base_status = f"Enter command: {cmd_buffer}"
+        dynamic = status_provider() if callable(status_provider) else ""
+        status_text = f"{base_status}" + (f"   |   {last_result}" if last_result else "")
+        if dynamic:
+            status_text += f"   |   {dynamic}"
+
         draw_once(state, status_text)
 
     pygame.quit()
+
