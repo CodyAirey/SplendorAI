@@ -175,6 +175,7 @@ def draw_noble(surface, noble):
     pygame.draw.rect(surface, (245,235,210), noble.rect, border_radius=8)
     pygame.draw.rect(surface, DARKGREY, noble.rect, 2, border_radius=8)
 
+    # Points + requirements
     pts_val = noble.victoryPoints
     reqs = {
         "emerald": noble.emerald,
@@ -183,15 +184,27 @@ def draw_noble(surface, noble):
         "onyx": noble.onyx,
         "ruby": noble.ruby,
     }
-    reqs = {k:v for k,v in reqs.items() if v > 0}
+    reqs = {k: v for k, v in reqs.items() if v > 0}
 
     surface.blit(FONT_SMALL.render("Noble", True, BLACK), (noble.rect.x+68, noble.rect.y+8))
     surface.blit(FONT_BIG.render(str(pts_val), True, BLACK), (noble.rect.x+8, noble.rect.y+8))
 
     y = noble.rect.y + 90
-    for c,v in sorted(reqs.items()):
+    for c, v in sorted(reqs.items()):
         _draw_cost_pip(surface, noble.rect.x+10, y, c, v)
         y -= 18
+
+    # --- Ownership badge (red circle with player number) ---
+    owner = getattr(noble, "playerVisited", -1)
+    if owner != -1:
+        badge_r = 14
+        cx = noble.rect.right - badge_r - 6
+        cy = noble.rect.y + badge_r + 6
+        pygame.draw.circle(surface, (200, 40, 40), (cx, cy), badge_r)       # red fill
+        pygame.draw.circle(surface, WHITE, (cx, cy), badge_r, 2)             # white ring
+        num = str(owner + 1)  # convert 0-based index -> player number
+        txt = FONT_SMALL_BOLD.render(num, True, WHITE)
+        surface.blit(txt, txt.get_rect(center=(cx, cy)))
 
 
 def draw_deck_pile(surface, rect: pygame.Rect, tier: int, remaining: int):

@@ -1,5 +1,9 @@
 import os
 
+# Cheat codes
+FORCE_BUY = "FB("
+SKIP = "SKIP"
+SET_COINS = "SC("
 
 TAKE = "T("
 BUY = "B("
@@ -18,7 +22,8 @@ TABLE_ROWS = 3   # tiers: 0..2
 TABLE_COLS = 4   # columns: 0..3
 RESERVE_COLS = 3 # per-player reserve slots: 0..2
 
-GEMS = [RUBY, ONYX, SAPPHIRE, DIAMOND, EMERALD, GOLD]
+# GEMS = [RUBY, ONYX, SAPPHIRE, DIAMOND, EMERALD, GOLD]
+GEMS = [DIAMOND, SAPPHIRE, EMERALD, RUBY, ONYX, GOLD]
 GEM_SET = set(GEMS)
 GEM_SET_NO_GOLD = set(GEMS) - {GOLD}
 GEM_TO_INDEX = {g: i for i, g in enumerate(GEMS)}
@@ -27,8 +32,36 @@ INDEX_TO_GEM = {i: g for i, g in enumerate(GEMS)}
 def parse_move(move_str):
     move_str = move_str.strip().upper()
 
-    if move_str == "SKIP":
+    if move_str == SKIP:
         return ("SKIP", None)
+    
+    # ---- SET_COINS ----
+    if move_str.startswith(SET_COINS) and move_str.endswith(END):
+        body = move_str[len(SET_COINS):-len(END)].replace(" ", "")
+        if "," in body:
+            parts = body.split(",")
+        else:
+            parts = list(body)
+
+        if len(parts) != 6:
+            raise ValueError("SET_COINS needs 6 values: D,S,E,R,O,G.")
+
+        try:
+            _ = [int(x) for x in parts]
+            return ("SET_COINS", parts)
+        except ValueError:
+            raise ValueError("SET_COINS expects digits only (D,S,E,R,O,G).")
+
+
+    # ---- FORCE_BUY ----
+    if move_str.startswith(FORCE_BUY) and move_str.endswith(END):
+        params = move_str[len(FORCE_BUY):-len(END)].split(",")
+        if len(params) != 2:
+            raise ValueError(f"Invalid FORCE_BUY params: {move_str}")
+        a, b = params[0].strip(), params[1].strip()
+        if a == "R":
+            return ("FORCE_BUY", ("R", int(b)))
+        return ("FORCE_BUY", (int(a), int(b)))
 
     # ---- TAKE ----
     if move_str.startswith(TAKE) and move_str.endswith(END):

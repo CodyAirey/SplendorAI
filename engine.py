@@ -55,30 +55,110 @@ def _gold_required_for_card(card, tokens: Dict[str,int], bonuses: Dict[str,int])
     return need_gold
 
 def _check_for_noble_visit(state: GameState):
-    player = state.players[state.active_idx]
+    p = state.players[state.active_idx]
     for noble in state.nobles:
-        if noble.playerVisited == -1: #potential visit
-        
-            # dealing with my rubbish noble class issues
-            reqs = {
-                "emerald": noble.emerald,
-                "diamond": noble.diamond,
-                "sapphire": noble.sapphire,
-                "onyx": noble.onyx,
-                "ruby": noble.ruby
-            }
-            reqs = {k:v for k,v in reqs.items() if v > 0}
-            
-            for gem, bonusAmount in player.bonuses.items():
-                if reqs[gem] > bonusAmount:
-                    # cant qualify for noble
-                    return
+        if getattr(noble, "playerVisited", -1) != -1:
+            continue  # already visited
 
-            #passed all noble requirements.
+        # Build requirements (only positive amounts)
+        reqs = {
+            "emerald": getattr(noble, "emerald", 0),
+            "diamond": getattr(noble, "diamond", 0),
+            "sapphire": getattr(noble, "sapphire", 0),
+            "onyx": getattr(noble, "onyx", 0),
+            "ruby": getattr(noble, "ruby", 0),
+        }
+        reqs = {k: v for k, v in reqs.items() if v > 0}
+
+        # Check all requirements met by bonuses
+        if all(p.bonuses.get(color, 0) >= need for color, need in reqs.items()):
             noble.playerVisited = state.active_idx
-            player.points += noble.victoryPoints
-            return #return early, can't have two nobles visit in 1 turn
+            p.points += int(getattr(noble, "victoryPoints", 0))
+            return  # at most one noble per turn
         
+def _set_coins(state: GameState, payload):
+    """
+    payload: 6 numbers in order D,S,E,R,O,G (each 0..7, gold 0..5).
+    Also enforces total <= 10 (including gold).
+    Rebuilds bank to match official supply for player count.
+    """
+    # Parse ints
+    try:
+        counts = [int(x) for x in payload]
+    except Exception:
+        raise ValueError("SET_COINS expects digits only (D,S,E,R,O,G).")
+
+    if len(counts) != 6:
+        raise ValueError("SET_COINS needs 6 values: D,S,E,R,O,G.")
+
+    order = ["diamond", "sapphire", "emerald", "ruby", "onyx", "gold"]
+
+    # Per-gem limits
+    for i, g in enumerate(order):
+        limit = 7 if g != "gold" else 5
+        v = counts[i]
+        if v < 0 or v > limit:
+            raise ValueError(f"Invalid SET_COINS: {g}={v} (must be 0..{limit})")
+
+    # Total <= 10 (includes gold)
+    total = sum(counts)
+    if total > 10:
+        raise ValueError(f"Invalid SET_COINS: total tokens={total} (must be <= 10).")
+
+    # Apply to active player
+    active = state.players[state.active_idx]
+    active.tokens = {g: counts[i] for i, g in enumerate(order)}
+
+    # Zero everyone else’s tokens (keep bonuses untouched)
+    for pl in state.players:
+        if pl is not active:
+            pl.tokens = {g: 0 for g in order}
+
+    # Rebuild bank from official supply per player count (gold always 5)
+    per_colour = {2: 4, 3: 5, 4: 7}[len(state.players)]
+    bank = {g: per_colour - active.tokens[g] for g in order[:-1]}  # colours
+    bank["gold"] = 5 - active.tokens["gold"]
+    state.bank = bank
+        
+
+def apply_force_buy(state: GameState, target) -> str:
+    """
+    FORCE_BUY: bypasses cost/payment.
+    target can be:
+      ("R", idx) for reserve idx
+      (row, col) for table card
+    """
+    p = state.players[state.active_idx]
+
+    # --- Reserve buy ---
+    if isinstance(target[0], str) and target[0] == "R":
+        idx = target[1]
+        if not (0 <= idx < len(p.reserved)):
+            return "Invalid FORCE_BUY: reserve index."
+        card = p.reserved.pop(idx)
+
+    # --- Table buy ---
+    else:
+        row, col = target
+        table, deck, _ = row_to_table_and_deck(state, row)
+        if not (0 <= col < len(table)):
+            return "Invalid FORCE_BUY: table position."
+        card = table.pop(col)
+        if deck:
+            table.insert(col, deck.pop(0))
+
+    # Apply reward (no payment)
+    bonus_gem = _norm(card.gemType)
+    if bonus_gem != "gold":
+        p.bonuses[bonus_gem] = p.bonuses.get(bonus_gem, 0) + 1
+    p.points += int(card.victoryPoints)
+
+    # Check for nobles
+    _check_for_noble_visit(state)
+
+    # Advance turn
+    state.active_idx = (state.active_idx + 1) % len(state.players)
+    return "Force-bought."
 
 def player_can_afford(p: Player, card: Card) -> bool:
     cost = card_cost_lc(card)
@@ -334,6 +414,13 @@ def apply_move(state: GameState, parsed_move) -> str:
     if kind == "SKIP":
         state.active_idx = (state.active_idx + 1) % len(state.players)
         return "Turn skipped."
+    
+    if kind == "SET_COINS":
+        _set_coins(state, payload)
+        return "Set Coins Successfully."
+    
+    if kind == "FORCE_BUY":
+        return apply_force_buy(state, payload)
     
     #TODO: think about times when only 2 unique gems are left.... currently softlocks game
     # don't wanna make it complex for model training
