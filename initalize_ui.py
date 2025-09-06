@@ -108,6 +108,11 @@ def run_ui(state: GameState, status_provider=None):
             if event.type == pygame.QUIT:
                 running = False
 
+            if state.game_over:
+                if event.key in (pygame.K_ESCAPE, pygame.K_q):
+                    running = False
+                continue
+            
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     cmd_buffer = ""
@@ -130,11 +135,11 @@ def run_ui(state: GameState, status_provider=None):
                         cmd_buffer += ch
 
         dynamic = status_provider() if callable(status_provider) else ""
+        if state.game_over and state.final_summary:
+            last_result = state.final_summary  # pin the winner message
         status_text = f"Enter command: {cmd_buffer}" + (f"   |   {last_result}" if last_result else "")
         if dynamic:
             status_text += f"   |   {dynamic}"
-
-        # Re-render with current state after any mutation
         draw_once(state, status_text)
 
     pygame.quit()

@@ -76,6 +76,10 @@ def _check_for_noble_visit(state: GameState):
             p.points += int(getattr(noble, "victoryPoints", 0))
             return  # at most one noble per turn
         
+def purchased_card_count(p: Player) -> int:
+    """In Splendor, every purchased card grants exactly one permanent bonus."""
+    return sum(int(v) for v in p.bonuses.values())
+
 def _set_coins(state: GameState, payload):
     """
     payload: 6 numbers in order D,S,E,R,O,G (each 0..7, gold 0..5).
@@ -121,6 +125,62 @@ def _set_coins(state: GameState, payload):
     state.bank = bank
         
 
+def compute_winner(state: GameState):
+    """
+    Returns (winners_list, summary_string).
+    winners_list is a list of (player_index, points, purchased_count).
+    Tie-break: highest points, then fewest purchased cards.
+    """
+    scored = []
+    for i, p in enumerate(state.players):
+        pts = int(p.points)
+        bought = purchased_card_count(p)
+        scored.append((i, pts, bought))
+
+    # best: max pts, then min bought
+    best_pts = max(s[1] for s in scored)
+    contenders = [s for s in scored if s[1] == best_pts]
+    min_bought = min(s[2] for s in contenders)
+    winners = [s for s in contenders if s[2] == min_bought]
+
+    # Build a readable summary
+    if len(winners) == 1:
+        i, pts, bought = winners[0]
+        name = state.players[i].name
+        summary = f"GAME OVER: {name} wins ({pts} pts, {bought} cards)."
+    else:
+        names = ", ".join(state.players[i].name for i, _, _ in winners)
+        summary = f"GAME OVER: tie between {names} ({best_pts} pts; tie-break on fewest cards={min_bought})."
+    return winners, summary
+
+
+def _maybe_trigger_endgame_after_action(state: GameState):
+    if state.endgame or state.game_over:
+        return
+    # Trigger only when someone reaches 15+
+    if any(p.points >= 15 for p in state.players):
+        state.endgame = True
+        n = len(state.players)
+        state.endgame_last_player_idx = (state.start_idx - 1) % n
+
+def _advance_turn(state: GameState) -> str:
+    """
+    Advance the turn. If endgame is active and the player who just finished
+    was the last in the round, end the game *now* and return the summary.
+    """
+    just_played = state.active_idx
+
+    # If the round is completing now, end immediately (no extra command needed)
+    if state.endgame and just_played == state.endgame_last_player_idx and not state.game_over:
+        state.game_over = True
+        _, summary = compute_winner(state)
+        state.final_summary = summary  # keep it around for UI
+        return summary
+
+    # Otherwise move to next player as usual
+    state.active_idx = (just_played + 1) % len(state.players)
+    return ""
+
 def apply_force_buy(state: GameState, target) -> str:
     """
     FORCE_BUY: bypasses cost/payment.
@@ -155,10 +215,9 @@ def apply_force_buy(state: GameState, target) -> str:
 
     # Check for nobles
     _check_for_noble_visit(state)
-
-    # Advance turn
-    state.active_idx = (state.active_idx + 1) % len(state.players)
-    return "Force-bought."
+    _maybe_trigger_endgame_after_action(state)
+    over_msg = _advance_turn(state)
+    return over_msg or "Force Bought."
 
 def player_can_afford(p: Player, card: Card) -> bool:
     cost = card_cost_lc(card)
@@ -218,10 +277,9 @@ def apply_purchase(state: GameState, row: int, col: int) -> str:
         table.insert(col, deck.pop(0))
 
     _check_for_noble_visit(state)
-
-    # Advance turn
-    state.active_idx = (state.active_idx + 1) % len(state.players)
-    return "Purchased."
+    _maybe_trigger_endgame_after_action(state)
+    over_msg = _advance_turn(state)
+    return over_msg or "Purchased."
 
 
 def handle_coin_overflow(state: GameState, totalPlayerCoins) -> Dict[str, int]:
@@ -323,12 +381,14 @@ def apply_reserve(state: GameState, row: int, col: int) -> str:
 
     if total <= 10:
         # Advance turn
-        state.active_idx = (state.active_idx + 1) % len(state.players)
-        return "Reserved, +1 Gold."
+        over_msg = _advance_turn(state)
+        return over_msg or "Reserved, +1 Gold."
     else:
         returned = handle_coin_overflow(state, total)
         discards_msg = ", ".join(f"{g}:{n}" for g, n in returned.items() if n > 0)
-        return "Reserved, +1 Gold." + (f" Discarded ({discards_msg})." if discards_msg else "")
+        over_msg = _advance_turn(state)
+        return over_msg or ("Reserved, +1 Gold." + (f" Discarded ({discards_msg})." if discards_msg else ""))
+
 
 
 def apply_take2(state: GameState, gem: str) -> str:
@@ -344,13 +404,13 @@ def apply_take2(state: GameState, gem: str) -> str:
     total = sum(p.tokens.get(x, 0) for x in GEM_ORDER_WITH_GOLD)
 
     if total <= 10:
-        state.active_idx = (state.active_idx + 1) % len(state.players)
-        return f"Took 2 {g}."
+        over_msg = _advance_turn(state)
+        return over_msg or f"Took 2 {g}."
     else:
         returned = handle_coin_overflow(state, total)
-        discards_msg = ", ".join(f"{g}:{n}" for g, n in returned.items() if n > 0)
-        return f"Took 2 {g}." + (f" Discarded ({discards_msg})." if discards_msg else "")
-
+        discards_msg = ", ".join(f"{gg}:{n}" for gg, n in returned.items() if n > 0)
+        over_msg = _advance_turn(state)
+        return over_msg or (f"Took 2 {g}." + (f" Discarded ({discards_msg})." if discards_msg else ""))
 
 def apply_take3(state: GameState, gems: Tuple[str, str, str]) -> str:
     gs = [_norm(x) for x in gems]
@@ -372,14 +432,14 @@ def apply_take3(state: GameState, gems: Tuple[str, str, str]) -> str:
     total = sum(p.tokens.get(x, 0) for x in GEM_ORDER_WITH_GOLD)
 
     if total <= 10:
-        state.active_idx = (state.active_idx + 1) % len(state.players)
-        return f"Took {', '.join(gs)}."
+        over_msg = _advance_turn(state)
+        return over_msg or f"Took {', '.join(gs)}."
     else:
         returned = handle_coin_overflow(state, total)
-        # Advance turn & report
-        state.active_idx = (state.active_idx + 1) % len(state.players)
-        discards_msg = ", ".join(f"{g}:{n}" for g, n in returned.items() if n > 0)
-        return f"Took {', '.join(gs)}." + (f" Discarded ({discards_msg})." if discards_msg else "")
+        discards_msg = ", ".join(f"{gg}:{n}" for gg, n in returned.items() if n > 0)
+        over_msg = _advance_turn(state)
+        return over_msg or (f"Took {', '.join(gs)}." + (f" Discarded ({discards_msg})." if discards_msg else ""))
+
 
 
 # --- public API ----------------------------------------------------------
@@ -394,6 +454,10 @@ def apply_move(state: GameState, parsed_move) -> str:
     Returns a short status string; mutates state in place.
     """
     kind, payload = parsed_move
+
+    if state.game_over:
+        _, summary = compute_winner(state)
+        return summary
 
     if kind == "TAKE_2":
         return apply_take2(state, payload)

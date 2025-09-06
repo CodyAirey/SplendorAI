@@ -104,5 +104,6 @@ def load_initial_state(playerCount: int) -> GameState:
         table_t3=table_t3,
         nobles=nobles,
         players=players,
-        active_idx=starting_idx
+        start_idx=starting_idx,
+        active_idx=starting_idx,
     )
