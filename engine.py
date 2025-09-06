@@ -54,6 +54,32 @@ def _gold_required_for_card(card, tokens: Dict[str,int], bonuses: Dict[str,int])
         need_gold += deficit
     return need_gold
 
+def _check_for_noble_visit(state: GameState):
+    player = state.players[state.active_idx]
+    for noble in state.nobles:
+        if noble.playerVisited == -1: #potential visit
+        
+            # dealing with my rubbish noble class issues
+            reqs = {
+                "emerald": noble.emerald,
+                "diamond": noble.diamond,
+                "sapphire": noble.sapphire,
+                "onyx": noble.onyx,
+                "ruby": noble.ruby
+            }
+            reqs = {k:v for k,v in reqs.items() if v > 0}
+            
+            for gem, bonusAmount in player.bonuses.items():
+                if reqs[gem] > bonusAmount:
+                    # cant qualify for noble
+                    return
+
+            #passed all noble requirements.
+            noble.playerVisited = state.active_idx
+            player.points += noble.victoryPoints
+            return #return early, can't have two nobles visit in 1 turn
+        
+
 def player_can_afford(p: Player, card: Card) -> bool:
     cost = card_cost_lc(card)
     gold = p.tokens.get("gold", 0)
@@ -110,6 +136,8 @@ def apply_purchase(state: GameState, row: int, col: int) -> str:
     table.pop(col)
     if deck:
         table.insert(col, deck.pop(0))
+
+    _check_for_noble_visit(state)
 
     # Advance turn
     state.active_idx = (state.active_idx + 1) % len(state.players)
