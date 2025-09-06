@@ -1,7 +1,7 @@
 # ui.py
 import pygame
 from game_state import GameState
-from splendor_template import (
+from ui_components import (
     draw_card, draw_noble, draw_deck_pile,
     draw_bank_on_board, draw_player_panel,
     layout_board, TOKEN_R, MARGIN, H, FONT, WHITE, STATUS_H,
