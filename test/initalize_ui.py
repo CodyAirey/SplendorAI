@@ -12,7 +12,7 @@ def init_ui(state: GameState):
     running = True
 
     # Layout can be computed once since we're only showing the initial state here.
-    layout = layout_board(state.deck_t1, state.deck_t2, state.deck_t3, state.nobles, len(state.players))
+    layout = layout_board(state.table_t1, state.table_t2, state.table_t3, state.nobles, len(state.players))
 
     while running:
         CLOCK.tick(FPS)
@@ -26,14 +26,14 @@ def init_ui(state: GameState):
         for nb in state.nobles[:len(layout["nobles"])]:
             draw_noble(SCREEN, nb)
 
-        # Cards (top 4 of each tier)
-        for c in state.deck_t3[:4] + state.deck_t2[:4] + state.deck_t1[:4]:
+        # Cards on table
+        for c in state.table_t1 + state.table_t2 + state.table_t3:
             draw_card(SCREEN, c)
 
         # Deck piles + visible cards
-        draw_deck_pile(SCREEN, layout["deck3"], 3, len(state.deck_t3))
-        draw_deck_pile(SCREEN, layout["deck2"], 2, len(state.deck_t2))
-        draw_deck_pile(SCREEN, layout["deck1"], 1, len(state.deck_t1))
+        if state.deck_t3: draw_deck_pile(SCREEN, layout["deck3"], 3, len(state.deck_t3))
+        if state.deck_t2: draw_deck_pile(SCREEN, layout["deck2"], 2, len(state.deck_t2))
+        if state.deck_t1: draw_deck_pile(SCREEN, layout["deck1"], 1, len(state.deck_t1))
 
         # Bottom bank
         draw_bank_on_board(SCREEN, layout["bank_chips"], state.bank)
