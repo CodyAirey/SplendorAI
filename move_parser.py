@@ -27,6 +27,9 @@ INDEX_TO_GEM = {i: g for i, g in enumerate(GEMS)}
 def parse_move(move_str):
     move_str = move_str.strip().upper()
 
+    if move_str == "SKIP":
+        return ("SKIP", None)
+
     # ---- TAKE ----
     if move_str.startswith(TAKE) and move_str.endswith(END):
         gems = move_str[len(TAKE):-len(END)]
