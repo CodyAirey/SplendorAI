@@ -6,6 +6,7 @@ class Noble:
         self.sapphire = sapphires
         self.onyx = onyx
         self.ruby = rubies
+        self.playerVisited = -1
 
     def __repr__(self):
         return (f"Noble(VictoryPoints={self.victoryPoints}, "

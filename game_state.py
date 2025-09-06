@@ -23,4 +23,10 @@ class GameState:
     table_t3: List[Card]
     nobles: List[Noble]
     players: List[Player]
+
+    start_idx: int = 0
     active_idx: int = 0
+    endgame: bool = False              # set when someone first hits ≥15
+    endgame_last_player_idx: int = -1  # (start_idx - 1) % n
+    game_over: bool = False
+    final_summary: str = ""

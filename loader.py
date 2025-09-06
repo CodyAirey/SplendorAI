@@ -83,15 +83,16 @@ def load_initial_state(playerCount: int) -> GameState:
     else:
         raise ValueError("playerCount must be 2, 3, or 4")
 
-    players = []
-    for i in range(playerCount):
-        players.append(
-            Player(
-                name=f"P{i+1}",
-                tokens={c:0 for c in bank},
-                bonuses={c:0 for c in bank if c!="gold"}
-            )
+    players = [
+        Player(
+            name=f"P{i+1}",
+            tokens={c: 0 for c in bank},
+            bonuses={c: 0 for c in bank if c != "gold"}
         )
+        for i in range(playerCount)
+    ]
+
+    starting_idx = random.randrange(playerCount)
 
     return GameState(
         bank=bank,
@@ -103,5 +104,6 @@ def load_initial_state(playerCount: int) -> GameState:
         table_t3=table_t3,
         nobles=nobles,
         players=players,
-        active_idx=0
+        start_idx=starting_idx,
+        active_idx=starting_idx,
     )
