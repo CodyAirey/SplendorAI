@@ -1,13 +1,13 @@
 class Noble:
     def __init__(self, victoryPoints, emeralds=0, diamonds=0, sapphires=0, onyx=0, rubies=0):
         self.victoryPoints = victoryPoints
-        self.emeralds = emeralds
-        self.diamonds = diamonds
-        self.sapphires = sapphires
+        self.emerald = emeralds
+        self.diamond = diamonds
+        self.sapphire = sapphires
         self.onyx = onyx
-        self.rubies = rubies
+        self.ruby = rubies
 
     def __repr__(self):
         return (f"Noble(VictoryPoints={self.victoryPoints}, "
-                f"EmeraldReq={self.emeralds}, DiamondReq={self.diamonds}, SapphireReq={self.sapphires}, "
-                f"OnyxReq={self.onyx}, RubyReq={self.rubies})")
+                f"EmeraldReq={self.emerald}, DiamondReq={self.diamond}, SapphireReq={self.sapphire}, "
+                f"OnyxReq={self.onyx}, RubyReq={self.ruby})")
