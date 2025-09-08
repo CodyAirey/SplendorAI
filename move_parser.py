@@ -22,12 +22,10 @@ TABLE_ROWS = 3   # tiers: 0..2
 TABLE_COLS = 4   # columns: 0..3
 RESERVE_COLS = 3 # per-player reserve slots: 0..2
 
-# GEMS = [RUBY, ONYX, SAPPHIRE, DIAMOND, EMERALD, GOLD]
 GEMS = [DIAMOND, SAPPHIRE, EMERALD, RUBY, ONYX, GOLD]
 GEM_SET = set(GEMS)
 GEM_SET_NO_GOLD = set(GEMS) - {GOLD}
-GEM_TO_INDEX = {g: i for i, g in enumerate(GEMS)}
-INDEX_TO_GEM = {i: g for i, g in enumerate(GEMS)}
+
 
 def parse_move(move_str):
     move_str = move_str.strip().upper()
