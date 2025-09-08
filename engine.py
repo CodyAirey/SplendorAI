@@ -475,21 +475,20 @@ def check_all_available_moves(state: GameState) -> List[str]:
     active_player = state.players[state.active_idx]
     moves = []
     
-    # # build purchasable set;
-    # for row in (0, 1, 2):
-    #     table, _, _ = row_to_table_and_deck(state, row)
-    #     for col, c in enumerate(table):
-    #         if player_can_afford(active_player, c):
-    #             moves.append(("BUY", (row, col)))
+    # build purchasable set;
+    for row in (0, 1, 2):
+        table, _, _ = row_to_table_and_deck(state, row)
+        for col, c in enumerate(table):
+            if player_can_afford(active_player, c):
+                moves.append(("BUY", (row, col)))
 
-    # for col, c in enumerate(state.players[state.active_idx].reserved):
-    #     if player_can_afford(active_player, c):
-    #             moves.append("BUY", ("R", col))
+    for col, c in enumerate(state.players[state.active_idx].reserved):
+        if player_can_afford(active_player, c):
+                moves.append("BUY", ("R", col))
     
 
-    take_threes = list(combinations(GEM_ORDER, 3))
-
-    print(take_threes)
+    take_threes = list(combinations(GEM_ORDER, 3)) 
+    
 
 
 # --- public API ----------------------------------------------------------
