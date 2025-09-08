@@ -1,5 +1,5 @@
 # engine.py
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Any
 from game_state import GameState, Player
 from card import Card
 from itertools import combinations
@@ -471,23 +471,36 @@ def apply_take3(state: GameState, gems: Tuple[str, str, str]) -> str:
         return over_msg or (f"Took {', '.join(gs)}." + (f" Discarded ({discards_msg})." if discards_msg else ""))
 
 
-def check_all_available_moves(state: GameState) -> List[str]:
+Move = tuple[str, Any]
+def check_all_available_moves(state: GameState) -> List[Move]:
     active_player = state.players[state.active_idx]
-    moves = []
+    moves: List[Move] = []
     
-    # build purchasable set;
+    # build purchasable / reservable set
     for row in (0, 1, 2):
         table, _, _ = row_to_table_and_deck(state, row)
         for col, c in enumerate(table):
+            if c is None:
+                continue
             if player_can_afford(active_player, c):
                 moves.append(("BUY", (row, col)))
+            if len(active_player.reserved) < 3:
+                moves.append(("RESERVE", (row, col)))
 
-    for col, c in enumerate(state.players[state.active_idx].reserved):
+    # buy from reserved
+    for col, c in enumerate(active_player.reserved):
+        if c is None:
+            continue
         if player_can_afford(active_player, c):
-                moves.append("BUY", ("R", col))
-    
+            moves.append(("BUY", ("R", col)))
 
-    take_threes = list(combinations(GEM_ORDER, 3)) 
+    gem_letters = [g[0].upper() for g in GEM_ORDER]  # e.g. ["D", "S", "E", "R", "O"]
+
+    take_threes = [("TAKE_3", combo) for combo in combinations(gem_letters, 3)]
+    take_twos   = [("TAKE_2", letter) for letter in gem_letters]
+
+    return moves + take_threes + take_twos
+    
     
 
 
