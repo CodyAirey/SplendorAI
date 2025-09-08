@@ -383,6 +383,8 @@ def handle_coin_overflow(state: GameState, totalPlayerCoins) -> Dict[str, int]:
             returned[g] += cnt
             over -= cnt
 
+    return returned
+
 def apply_reserve(state: GameState, row: int, col: int) -> str:
     p = state.players[state.active_idx]
     if len(p.reserved) >= 3:
@@ -514,6 +516,7 @@ def apply_move(state: GameState, parsed_move) -> str:
     
     #TODO: think about times when only 2 unique gems are left.... currently softlocks game
     # don't wanna make it complex for model training
+    #TODO: add "calculate possible moves", opt to perform that before skip, that way we can at least try buy
     if state.bank.get("diamond", 0) + state.bank.get("sapphire", 0) + state.bank.get("emerald", 0) + state.bank.get("ruby", 0) + state.bank.get("onyx", 0) < 3 or (state.bank.get("diamond", 0) < 2 and state.bank.get("sapphire", 0) < 2 and state.bank.get("emerald", 0) < 2 and state.bank.get("ruby", 0) < 2 and state.bank.get("onyx", 0) < 2):
           state.active_idx = (state.active_idx + 1) % len(state.players)
           return "Turn skipped."
