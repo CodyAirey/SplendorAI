@@ -517,8 +517,6 @@ def apply_move(state: GameState, parsed_move) -> str:
     """
     kind, payload = parsed_move
 
-    print(check_all_available_moves(state))
-
     if state.game_over:
         _, summary = compute_winner(state)
         return summary
