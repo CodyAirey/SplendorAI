@@ -106,6 +106,13 @@ def encode_table(state) -> np.ndarray:
     return np.concatenate(vecs, axis=0).astype(np.float32)
 
 
+def encode_bank(bank: dict) -> np.ndarray:
+    # Order: Diamond, Sapphire, Emerald, Ruby, Onyx, Gold
+    gems = [bank.get(g, 0) / MAX_TOKENS_PER_GEM for g in GEM_ORDER]
+    gold = bank.get("gold", 0) / MAX_GOLD
+    return np.array(gems + [gold], dtype=np.float32)
+
+
 def encode_player(p: Player) -> np.ndarray:
     # Output layout (len = 46):
     # [0]              points / MAX_POINTS
