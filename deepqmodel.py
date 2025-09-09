@@ -282,6 +282,17 @@ def selectAction(state: GameState, policyNet: DQN, device: torch.device, N_ACTIO
         else:
             idx = int(np.random.randint(0, N_ACTIONS))
         return torch.tensor([[idx]], device=device, dtype=torch.long)
+    
+
+def step_env(state: GameState, action_index: int, ACTIONS_PARSED: list[tuple]):
+    """Map index -> engine move tuple, apply, return (next_state, info_str, done)."""
+    move = ACTIONS_PARSED[action_index]   # canonical engine tuple
+    info = apply_move(state, move)        # mutates state; returns status string
+    done = state.game_over
+    return state, info, done
+
+
+
 
 if __name__ == '__main__':
     main()
