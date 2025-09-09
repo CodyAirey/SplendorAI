@@ -94,7 +94,16 @@ def encode_card(card) -> np.ndarray:
     v[6:] = np.array(costs, dtype=np.float32) / MAX_COST_PER_COLOUR
     return v
 
-
+def encode_table(state) -> np.ndarray:
+    # Flatten 3×4 table into a single vector (len = 12*11 = 132)
+    vecs = []
+    for row in (state.table_t1, state.table_t2, state.table_t3):
+        cards = list(row)[:TABLE_COLS]
+        while len(cards) < TABLE_COLS:   # pad if short
+            cards.append(None)
+        for c in cards:
+            vecs.append(encode_card(c))
+    return np.concatenate(vecs, axis=0).astype(np.float32)
 
 
 def encode_player(p: Player) -> np.ndarray:
