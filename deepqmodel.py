@@ -292,7 +292,9 @@ def step_env(state: GameState, action_index: int, ACTIONS_PARSED: list[tuple]):
     return state, info, done
 
 
-
+def compute_reward(prev_points: int, state_after: GameState, active_player_idx: int) -> float:
+    # need to pass in active player index, because engine advances the turn when apply_move
+    return float(state_after.players[active_player_idx].points - prev_points)
 
 if __name__ == '__main__':
     main()
