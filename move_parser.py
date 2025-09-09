@@ -1,5 +1,5 @@
 import os
-from loader import load_possible_moves
+from loader import load_valid_str_moves
 
 # Cheat codes
 FORCE_BUY = "FB("
@@ -143,7 +143,7 @@ def _run_case(move, expect_kind=None, expect_value=None, should_fail=False):
 def test_parser_with_file():
     failures = 0
 
-    valid_moves = load_possible_moves()
+    valid_moves = load_valid_str_moves()
 
     print(f"Number of valid moves: {len(valid_moves)}")
 

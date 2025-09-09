@@ -55,7 +55,7 @@ def _deal_tableau(deck, n=4):
         table.append(deck.pop(0))   # removes from deck, becomes face-up
     return table
 
-def load_possible_moves(datapath = "data/possible_moves.txt") -> List[str]:
+def load_valid_str_moves(datapath = "data/possible_moves.txt") -> List[str]:
     if not os.path.exists(datapath):
         print(f"Missing {datapath}")
         return
