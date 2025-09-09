@@ -5,6 +5,8 @@ from noble import Noble
 from game_state import GameState, Player
 import json
 import random
+from typing import List, Dict
+import os
 
 def load_cards(path, rank):
     """Load cards from a rankN CSV and tag with rank."""
@@ -52,6 +54,17 @@ def _deal_tableau(deck, n=4):
     for _ in range(min(n, len(deck))):
         table.append(deck.pop(0))   # removes from deck, becomes face-up
     return table
+
+def load_possible_moves(datapath = "data/possible_moves.txt") -> List[str]:
+    if not os.path.exists(datapath):
+        print(f"Missing {datapath}")
+        return
+
+    with open(datapath) as f:
+        lines = [ln.strip() for ln in f]
+
+    valid_moves = [ln for ln in lines if ln and not ln.startswith("#")]
+    return valid_moves
 
 def load_initial_state(playerCount: int) -> GameState:
     deck_t1 = load_cards("data/rank1_cards.csv", rank=1)
