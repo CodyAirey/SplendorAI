@@ -1,11 +1,11 @@
 class CardCost:
     def __init__(self, ruby=0, onyx=0, sapphire=0, diamond=0, emerald=0):
         self._costs = {
+            "Diamond": diamond,
+            "Sapphire": sapphire,
+            "Emerald": emerald,
             "Ruby": ruby,
             "Onyx": onyx,
-            "Sapphire": sapphire,
-            "Diamond": diamond,
-            "Emerald": emerald,
         }
 
     def __getitem__(self, gem):
