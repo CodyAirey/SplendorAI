@@ -109,13 +109,21 @@ def encode_table(state: GameState) -> np.ndarray:
             vecs.append(encode_card(c))
     return np.concatenate(vecs, axis=0).astype(np.float32)
 
-
-def encode_bank(bank: dict) -> np.ndarray:
+def encode_bank(bank: dict, num_players: int) -> np.ndarray:
     # Order: Diamond, Sapphire, Emerald, Ruby, Onyx, Gold
-    gems = [bank.get(g, 0) / MAX_TOKENS_PER_GEM for g in GEM_ORDER]
+    # Per-colour cap depends on player count (gold is always /5)
+    if num_players == 2:
+        gem_cap = 4.0
+    elif num_players == 3:
+        gem_cap = 5.0
+    elif num_players == 4:
+        gem_cap = 7.0
+    else:
+        raise ValueError("num_players must be 2, 3, or 4")
+
+    gems = [bank.get(g, 0) / gem_cap for g in GEM_ORDER]
     gold = bank.get("gold", 0) / MAX_GOLD
     return np.array(gems + [gold], dtype=np.float32)
-
 
 def encode_player(p: Player) -> np.ndarray:
     # Output layout (len = 46):
@@ -144,9 +152,10 @@ def encode_player(p: Player) -> np.ndarray:
     return np.concatenate([pts, tok_cols, tok_gold, bon_cols, rc_arr, reserved_vec], axis=0)
 
 
-def encode_noble(noble: Noble) -> np.ndarray:
+def encode_noble(noble: Noble, n_players: int) -> np.ndarray:
+    # length = 5 (requirements) + n_players (owner one-hot)
     if noble is None:
-        return np.zeros(5 + N_PLAYERS, dtype=np.float32)
+        return np.zeros(5 + n_players, dtype=np.float32)
 
     # requirements
     reqs = np.array([
@@ -158,17 +167,19 @@ def encode_noble(noble: Noble) -> np.ndarray:
     ], dtype=np.float32) / MAX_REQ_PER_COLOR
 
     # ownership one-hot
-    owner = np.zeros(N_PLAYERS, dtype=np.float32)
-    if noble.playerVisited >= 0 and noble.playerVisited < N_PLAYERS:
+    owner = np.zeros(n_players, dtype=np.float32)
+    if 0 <= noble.playerVisited < n_players:
         owner[noble.playerVisited] = 1.0
 
     return np.concatenate([reqs, owner], axis=0)
 
-def encode_nobles(nobles: list) -> np.ndarray:
+def encode_nobles(nobles: list, num_players: int) -> np.ndarray:
+    # Always num_players + 1 nobles visible (pad with None)
+    max_nobles = num_players + 1
     vecs = []
-    for i in range(MAX_NOBLES):
+    for i in range(max_nobles):
         n = nobles[i] if i < len(nobles) else None
-        vecs.append(encode_noble(n))
+        vecs.append(encode_noble(n, num_players))
     return np.concatenate(vecs, axis=0).astype(np.float32)
 
 def encode_state():
