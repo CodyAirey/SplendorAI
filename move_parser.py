@@ -153,6 +153,8 @@ def test_parser_with_file():
 
     valid_moves = [ln for ln in lines if ln and not ln.startswith("#")]
 
+    print(f"Number of valid moves: {len(valid_moves)}")
+
     print("=== Valid moves from file ===")
     for move in valid_moves:
         failures += _run_case(move, should_fail=False)
