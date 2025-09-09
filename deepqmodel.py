@@ -25,6 +25,8 @@ TAU = 0.005
 LR = 3e-4
 
 GEM_ORDER = ["Diamond", "Sapphire", "Emerald", "Ruby", "Onyx"]
+GEM_ORDER_LETTERS = ["D", "S", "E", "R", "O"]
+GEM_ORDER_LETTER_INDEX = {g: i for i, g in enumerate(GEM_ORDER_LETTERS)}
 GEM_INDEX = {g: i for i, g in enumerate(GEM_ORDER)}
 GEMS_WITH_GOLD = GEM_ORDER + ["gold"]          # bank & player tokens use gold too
 TABLE_ROWS, TABLE_COLS = 3, 4              # 12 visible cards
@@ -209,7 +211,6 @@ def main():
 
     print(check_all_available_moves(initialState))
 
-
     n_observations = len(encoded_state)
     actions = load_valid_str_moves()
 
@@ -221,6 +222,28 @@ def main():
     memory = ReplayMemory(10000)
 
 
+
+def canon_action(a):
+    #Canonicalise (kind, payload) to match engine ordering
+    kind, payload = a
+    kind = kind.upper()
+
+    if kind == "TAKE_3":
+        # Upper-case then sort by engine's letter order D,S,E,R,O
+        letters = [g.upper() for g in payload]
+        letters.sort(key=GEM_ORDER_LETTER_INDEX.get)
+        return (kind, tuple(letters))
+
+    if kind == "TAKE_2":
+        return (kind, payload.upper())
+
+    if kind in ("BUY", "RESERVE"):
+        r, c = payload
+        if isinstance(r, str):        # ("R", idx) form
+            return (kind, (r.upper(), int(c)))
+        return (kind, (int(r), int(c)))
+
+    return (kind, payload)
     
 
 def selectAction(state: GameState, policyNet: DQN):
