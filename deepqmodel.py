@@ -206,7 +206,7 @@ def main():
     encoded_state = encode_state(initialState)
 
     ACTION_STRINGS = load_valid_str_moves()                 # e.g. ["B(0,0)", "R(0,0)", "T(DSR)", ...]
-    ACTIONS_PARSED = [parse_move(s) for s in ACTION_STRINGS]  # tuples engine understands
+    ACTIONS_PARSED = [canon_action(parse_move(s)) for s in ACTION_STRINGS]  # tuples engine understands
     N_ACTIONS = len(ACTION_STRINGS)
 
     print(check_all_available_moves(initialState))
@@ -246,24 +246,42 @@ def canon_action(a):
     return (kind, payload)
     
 
-def selectAction(state: GameState, policyNet: DQN):
+def legal_action_mask(state: GameState, ACTIONS_PARSED: List[tuple]) -> np.ndarray:
+    """Boolean mask aligned with ACTIONS_PARSED (True = legal now)."""
+    legal_now = {canon_action(a) for a in check_all_available_moves(state)}
+    return np.array([a in legal_now for a in ACTIONS_PARSED], dtype=bool)
+
+
+def selectAction(state: GameState, policyNet: DQN, device: torch.device, N_ACTIONS: int):
     global steps
 
-    sample = random.random()
+    state_vec = encode_state(state)
+    state_t = torch.from_numpy(state_vec).to(device).unsqueeze(0)
+
     eps_threshold = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * steps / EPS_DECAY)
     steps += 1
+
+    mask_np = legal_action_mask(state)                       # [N_ACTIONS] bool
+    mask_t  = torch.from_numpy(mask_np).to(device)
     
     # If we rolled a number above the epsilon threshold, do what is determined by our learned model
-    if sample > eps_threshold:
-        # Note we do not want this to impact our training with backprop so we ignore the gradient
-        with torch.no_grad():
-            # t.max(1) will return the largest column value of each row.
-            # second column on max result is index of where max element was
-            # found, so we pick action with the larger expected reward.
-            return policyNet(state).max(1).indices.view(1, 1)
+    if random.random() > eps_threshold:
+        with torch.no_grad(): #Turn off gradient flowing, the learning happens from the transition stores
+            q = policyNet(state_t)                          # [1, N_ACTIONS]
+            if mask_t.any():
+                q[0, ~mask_t] = -float("inf")               # forbid illegal
+                a = q.argmax(dim=1, keepdim=True)           # [1,1]
+            else:
+                a = torch.randint(0, N_ACTIONS, (1,1), device=device)
+        return a.to(torch.long)
     else:
         # If we rolled below the epsilon threshold, do something random for exploration
-        return torch.tensor([[env.action_space.sample()]], device=device, dtype=torch.long)
+        legal_idx = np.flatnonzero(mask_np)
+        if legal_idx.size:
+            idx = int(np.random.choice(legal_idx))
+        else:
+            idx = int(np.random.randint(0, N_ACTIONS))
+        return torch.tensor([[idx]], device=device, dtype=torch.long)
 
 if __name__ == '__main__':
     main()
