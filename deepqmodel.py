@@ -182,8 +182,18 @@ def encode_nobles(nobles: list, num_players: int) -> np.ndarray:
         vecs.append(encode_noble(n, num_players))
     return np.concatenate(vecs, axis=0).astype(np.float32)
 
-def encode_state():
-    print("!")
+def encode_state(state: GameState) -> np.ndarray:
+    num_players = len(state.players)
+
+    parts = []
+    parts.append(encode_table(state))                         # 132
+    parts.append(encode_bank(state.bank, num_players))        # 6 (scaled by players)
+    for p in state.players:                                   # n × 46 if n players (min 2)
+        parts.append(encode_player(p))
+    parts.append(encode_nobles(state.nobles, num_players))    # (num_players+1) * (5 + num_players)
+    # parts.append(encode_num_players(num_players)) # maybe? unsure.... 
+
+    return np.concatenate(parts, axis=0).astype(np.float32)
 
 
 def main():
