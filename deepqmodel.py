@@ -11,7 +11,9 @@ from card import Card
 from game_state import GameState, Player
 from noble import Noble
 from typing import List, Dict
-
+from loader import load_initial_state, load_valid_str_moves
+from move_parser import parse_move
+from engine import check_all_available_moves, apply_move
 Transition = namedtuple('Transition', ('state', 'action', 'nextState', 'reward'))
 
 BATCH_SIZE = 128
@@ -21,8 +23,6 @@ EPS_END = 0.01
 EPS_DECAY = 2500
 TAU = 0.005
 LR = 3e-4
-
-N_POSSIBLE_ACTIONS = 42
 
 GEM_ORDER = ["Diamond", "Sapphire", "Emerald", "Ruby", "Onyx"]
 GEM_INDEX = {g: i for i, g in enumerate(GEM_ORDER)}
@@ -43,6 +43,7 @@ MAX_REQ_PER_COLOR = 4.0                       # nobles require up to 4 of a colo
 MAX_NOBLES = 5                                # max nobles on the table
 
 N_PLAYERS = 4
+steps = 0  # global env step counter for epsilon schedule
 
 
 # following some tutorial.
@@ -198,8 +199,48 @@ def encode_state(state: GameState) -> np.ndarray:
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(device)
+
+    initialState = load_initial_state(N_PLAYERS)
+    encoded_state = encode_state(initialState)
+
+    ACTION_STRINGS = load_valid_str_moves()                 # e.g. ["B(0,0)", "R(0,0)", "T(DSR)", ...]
+    ACTIONS_PARSED = [parse_move(s) for s in ACTION_STRINGS]  # tuples engine understands
+    N_ACTIONS = len(ACTION_STRINGS)
+
+    print(check_all_available_moves(initialState))
+
+
+    n_observations = len(encoded_state)
+    actions = load_valid_str_moves()
+
+    policy_net = DQN(n_observations, N_ACTIONS).to(device)
+    target_net = DQN(n_observations, N_ACTIONS).to(device)
+    target_net.load_state_dict(policy_net.state_dict())
+
+    optimizer = optim.AdamW(policy_net.parameters(), lr=LR, amsgrad=True)
+    memory = ReplayMemory(10000)
+
+
     
+
+def selectAction(state: GameState, policyNet: DQN):
+    global steps
+
+    sample = random.random()
+    eps_threshold = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * steps / EPS_DECAY)
+    steps += 1
+    
+    # If we rolled a number above the epsilon threshold, do what is determined by our learned model
+    if sample > eps_threshold:
+        # Note we do not want this to impact our training with backprop so we ignore the gradient
+        with torch.no_grad():
+            # t.max(1) will return the largest column value of each row.
+            # second column on max result is index of where max element was
+            # found, so we pick action with the larger expected reward.
+            return policyNet(state).max(1).indices.view(1, 1)
+    else:
+        # If we rolled below the epsilon threshold, do something random for exploration
+        return torch.tensor([[env.action_space.sample()]], device=device, dtype=torch.long)
 
 if __name__ == '__main__':
     main()
