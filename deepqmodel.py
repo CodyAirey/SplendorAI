@@ -39,6 +39,10 @@ MAX_BONUS_PER_COLOR  = 18.0                   # from cards (18 onyx cards total 
 MAX_CARD_COST        = 17.0                   # sum of gems for most expensive card
 MAX_POINTS = 18.0                             # player has 14 points, buys 5p card.
 MAX_COST_PER_COLOUR = 7.0                     # on 14, buys a 5 point card next turn.
+MAX_REQ_PER_COLOR = 4.0                       # nobles require up to 4 of a colour
+MAX_NOBLES = 5                                # max nobles on the table
+
+N_PLAYERS = 4
 
 
 # following some tutorial.
@@ -94,7 +98,7 @@ def encode_card(card) -> np.ndarray:
     v[6:] = np.array(costs, dtype=np.float32) / MAX_COST_PER_COLOUR
     return v
 
-def encode_table(state) -> np.ndarray:
+def encode_table(state: GameState) -> np.ndarray:
     # Flatten 3×4 table into a single vector (len = 12*11 = 132)
     vecs = []
     for row in (state.table_t1, state.table_t2, state.table_t3):
@@ -138,6 +142,34 @@ def encode_player(p: Player) -> np.ndarray:
     reserved_vec = np.concatenate(rvecs, axis=0).astype(np.float32)  # (33,)
 
     return np.concatenate([pts, tok_cols, tok_gold, bon_cols, rc_arr, reserved_vec], axis=0)
+
+
+def encode_noble(noble: Noble) -> np.ndarray:
+    if noble is None:
+        return np.zeros(5 + N_PLAYERS, dtype=np.float32)
+
+    # requirements
+    reqs = np.array([
+        noble.diamond,
+        noble.sapphire,
+        noble.emerald,
+        noble.ruby,
+        noble.onyx,
+    ], dtype=np.float32) / MAX_REQ_PER_COLOR
+
+    # ownership one-hot
+    owner = np.zeros(N_PLAYERS, dtype=np.float32)
+    if noble.playerVisited >= 0 and noble.playerVisited < N_PLAYERS:
+        owner[noble.playerVisited] = 1.0
+
+    return np.concatenate([reqs, owner], axis=0)
+
+def encode_nobles(nobles: list) -> np.ndarray:
+    vecs = []
+    for i in range(MAX_NOBLES):
+        n = nobles[i] if i < len(nobles) else None
+        vecs.append(encode_noble(n))
+    return np.concatenate(vecs, axis=0).astype(np.float32)
 
 def encode_state():
     print("!")
