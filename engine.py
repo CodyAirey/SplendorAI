@@ -495,13 +495,25 @@ def check_all_available_moves(state: GameState) -> List[Move]:
             moves.append(("BUY", ("R", col)))
 
     gem_letters = [g[0].upper() for g in GEM_ORDER]  # e.g. ["D", "S", "E", "R", "O"]
+    bank = state.bank
 
-    take_threes = [("TAKE_3", combo) for combo in combinations(gem_letters, 3)]
-    take_twos   = [("TAKE_2", letter) for letter in gem_letters]
+    # TAKE_3: only include if each of the 3 gems has at least 1 in the bank
+    for combo in combinations(gem_letters, 3):
+        g_lower = [_norm(x) for x in combo]
+        if all(bank.get(g, 0) >= 1 for g in g_lower):
+            moves.append(("TAKE_3", combo))
 
-    return moves + take_threes + take_twos
-    
-    
+    # TAKE_2: only include if that gem has at least 4 in the bank
+    for letter in gem_letters:
+        g = _norm(letter)
+        if g != "gold" and bank.get(g, 0) >= 4:
+            moves.append(("TAKE_2", letter))
+
+    # When no other move is possible, SKIP is the only option (avoids softlock)
+    if len(moves) == 0:
+        moves.append(("SKIP", None))
+
+    return moves
 
 
 # --- public API ----------------------------------------------------------
@@ -539,20 +551,12 @@ def apply_move(state: GameState, parsed_move) -> str:
     if kind == "SKIP":
         state.active_idx = (state.active_idx + 1) % len(state.players)
         return "Turn skipped."
-    
+
     if kind == "SET_COINS":
         _set_coins(state, payload)
         return "Set Coins Successfully."
-    
+
     if kind == "FORCE_BUY":
         return apply_force_buy(state, payload)
-    
-    #TODO: think about times when only 2 unique gems are left.... currently softlocks game
-    # don't wanna make it complex for model training
-    #TODO: add "calculate possible moves", opt to perform that before skip, that way we can at least try buy
-    if state.bank.get("diamond", 0) + state.bank.get("sapphire", 0) + state.bank.get("emerald", 0) + state.bank.get("ruby", 0) + state.bank.get("onyx", 0) < 3 or (state.bank.get("diamond", 0) < 2 and state.bank.get("sapphire", 0) < 2 and state.bank.get("emerald", 0) < 2 and state.bank.get("ruby", 0) < 2 and state.bank.get("onyx", 0) < 2):
-          state.active_idx = (state.active_idx + 1) % len(state.players)
-          return "Turn skipped."
-    
 
     return "Unknown move."
