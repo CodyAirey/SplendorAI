@@ -1,4 +1,6 @@
 # ui.py
+import copy
+import pickle
 import pygame
 from game_state import GameState
 from move_parser import parse_move
@@ -143,3 +145,69 @@ def run_ui(state: GameState, status_provider=None):
         draw_once(state, status_text)
 
     pygame.quit()
+
+
+def run_replay_ui(replay_path: str):
+    """
+    Load a .replay file (from inspect_games.py) and step through the game in the UI.
+    Left/Right = prev/next move, R = restart from beginning, Q/ESC = quit.
+    """
+    with open(replay_path, "rb") as f:
+        data = pickle.load(f)
+    initial_state = data["initial_state"]
+    moves = data["moves"]
+    results = data.get("results", [])
+    state_snapshots = data["state_snapshots"]
+
+    state_cache = [copy.deepcopy(initial_state)] + [copy.deepcopy(s) for s in state_snapshots]
+    step = 0
+    last_result = "Replay: Left/Right=prev/next  R=restart  Q=quit"
+    running = True
+
+    while running:
+        CLOCK.tick(FPS)
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key in (pygame.K_ESCAPE, pygame.K_q):
+                    running = False
+                elif event.key == pygame.K_r:
+                    step = 0
+                    state_cache = [copy.deepcopy(initial_state)] + [copy.deepcopy(s) for s in state_snapshots]
+                    last_result = "Restarted from turn 0"
+                elif event.key == pygame.K_RIGHT and not getattr(event, "repeat", False):
+                    if step < len(moves):
+                        step += 1
+                        last_result = results[step - 1] if step <= len(results) else ""
+                    else:
+                        last_result = "End of replay (R=restart)"
+                elif event.key == pygame.K_LEFT and not getattr(event, "repeat", False):
+                    if step > 0:
+                        step -= 1
+                        last_result = results[step] if step < len(results) else ""
+                    else:
+                        last_result = "At start (Right=next)"
+
+        current = state_cache[step] if step < len(state_cache) else state_cache[-1]
+        pts_line = "  ".join("P%d:%d" % (i + 1, int(getattr(p, "points", 0))) for i, p in enumerate(current.players))
+        if current.game_over and current.final_summary:
+            status = "%s  |  %s  |  ←→ R Q" % (current.final_summary[:50], pts_line)
+        elif step > 0 and step <= len(moves):
+            who = state_cache[step - 1].active_idx + 1
+            move_str = moves[step - 1]
+            status = "Step %d/%d  %s  |  Last: P%d %s  |  ←→ R Q" % (step, len(moves), pts_line, who, move_str)
+        else:
+            status = "Step %d/%d  %s  |  ←→ R Q" % (step, len(moves), pts_line)
+        draw_once(current, status)
+
+    pygame.quit()
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1].endswith(".replay"):
+        run_replay_ui(sys.argv[1])
+    else:
+        from loader import load_initial_state
+        run_ui(load_initial_state(2))
