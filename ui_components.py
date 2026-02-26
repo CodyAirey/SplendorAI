@@ -227,7 +227,11 @@ def draw_player_panel(surface, players: List[Player], active_idx: int, x0: int, 
         pygame.draw.rect(surface, GOLD if idx==active_idx else DARKGREY, block, 2, border_radius=8)
 
         prefix = "> " if idx==active_idx else ""
-        surface.blit(FONT.render(f"{prefix}{p.name}  (Pts {p.points})", True, BLACK), (block.x+12, block.y+8))
+        pts = int(getattr(p, "points", 0))  # total VP from all their cards
+        surface.blit(FONT.render(f"{prefix}{p.name}", True, BLACK), (block.x+12, block.y+8))
+        pts_text = FONT_BIG.render(f"Pts: {pts}", True, GOLD)
+        pts_rect = pts_text.get_rect(topright=(block.right - 12, block.y + 8))
+        surface.blit(pts_text, pts_rect)
 
         step = max(40, (block.w-24)//len(TOKEN_COLOURS))
         start_x = block.x+12+step//2
