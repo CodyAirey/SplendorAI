@@ -1,4 +1,5 @@
 import os
+from loader import load_valid_str_moves
 
 # Cheat codes
 FORCE_BUY = "FB("
@@ -142,16 +143,9 @@ def _run_case(move, expect_kind=None, expect_value=None, should_fail=False):
 def test_parser_with_file():
     failures = 0
 
-    # --- Load valid moves from file ---
-    fname = "data/possible_moves.txt"
-    if not os.path.exists(fname):
-        print(f"Missing {fname}")
-        return
+    valid_moves = load_valid_str_moves()
 
-    with open(fname) as f:
-        lines = [ln.strip() for ln in f]
-
-    valid_moves = [ln for ln in lines if ln and not ln.startswith("#")]
+    print(f"Number of valid moves: {len(valid_moves)}")
 
     print("=== Valid moves from file ===")
     for move in valid_moves:
