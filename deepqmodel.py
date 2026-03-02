@@ -1,74 +1,117 @@
+"""
+Splendor DQN: train a policy to play Splendor (hero vs random opponents).
+
+Usage:
+    python deepqmodel.py [--episodes N]
+"""
+
+import argparse
+import math
+import os
+import random
+from collections import deque, namedtuple
+from dataclasses import dataclass
+from typing import Dict, List, Tuple, Any
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import numpy as np
-import random
-from collections import deque, namedtuple
-from itertools import count
-import math
-import argparse
-import os
 
-from card import Card
+from engine import apply_move, check_all_available_moves
 from game_state import GameState, Player
-from noble import Noble
-from typing import List, Dict
 from loader import load_initial_state, load_valid_str_moves
 from move_parser import parse_move
-from engine import check_all_available_moves, apply_move
-Transition = namedtuple('Transition', ('state', 'action', 'nextState', 'reward', 'done'))
+from noble import Noble
 
-BATCH_SIZE = 64
-GAMMA = 0.99
-EPS_START = 0.9
-EPS_END = 0.01
-EPS_DECAY = 20_000          # step-based decay (self-play)
-EPS_DECAY_EPISODES = 500    # episode-based decay (hero mode): epsilon ~0.12 by ep 1000
-TAU = 0.005
-LR = 1e-4
-Q_TARGET_CLIP = 10.0  # clip TD targets to [-Q_TARGET_CLIP, Q_TARGET_CLIP] to prevent Q-value explosion
-REPLAY_CAPACITY = 50_000
-NUM_EPISODES = 10_000
-LOG_EVERY_EPISODES = 50
-CHECKPOINT_EVERY_EPISODES = 100      # save hero at 100, 200, ... + bestwr when recent_win% beats previous best
-CHECKPOINT_DIR = "checkpoints"
-BESTWR_FILENAME = "hero_bestwr.pt"
-OPPONENT_EPSILON = 0.1              # unused (no snapshot opponents)
-CAP_LOSS_REWARD = -1.0               # terminal reward when game hits turn cap (hero "loses")
-SKIP_PENALTY = -0.5                  # reward when hero has to skip (no other legal move); encourages avoiding dead states
-MAX_TURNS_PER_GAME = 500             # lower cap so stalemates end sooner and cap-loss signal is stronger
-EARLY_WIN_TURN_THRESHOLD = 350       # wins at or before this many turns get a bonus
-EARLY_WIN_BONUS = 0.5                # extra reward for winning quickly
-TERMINAL_WIN_REWARD = 2.0             # reward for winning (stronger signal than ±1)
-TERMINAL_LOSS_REWARD = -2.0          # reward for losing
-REWARD_CLIP = 3.0                     # clip reward to [-REWARD_CLIP, REWARD_CLIP] so ±2 terminal fits
-SPARSE_REWARD = True                  # if True: only terminal win/loss ±2 + tiny time penalty; no VP/card-value shaping
+# -----------------------------------------------------------------------------
+# Replay transition (state, action, next_state, reward, done)
+# -----------------------------------------------------------------------------
+Transition = namedtuple("Transition", ("state", "action", "nextState", "reward", "done"))
 
+
+# -----------------------------------------------------------------------------
+# Training config: all tunable hyperparameters in one place
+# -----------------------------------------------------------------------------
+@dataclass
+class TrainConfig:
+    """All training hyperparameters. Tweak these instead of scattered globals."""
+
+    # DQN / optimizer
+    batch_size: int = 64
+    gamma: float = 0.99
+    lr: float = 1e-4
+    tau: float = 0.005  # soft target update
+    q_target_clip: float = 10.0  # clip TD targets to avoid Q explosion
+
+    # Exploration (epsilon-greedy, episode-based for hero)
+    eps_start: float = 0.9       # when training from scratch (vs random)
+    eps_start_resume: float = 0.6   # when vs checkpoint: start more random, then hone in (decay to eps_end)
+    eps_end: float = 0.01
+    eps_decay_episodes: float = 2000.0
+
+    # Replay
+    replay_capacity: int = 25_000
+    terminal_replay_multiplier: int = 8  # oversample win/loss transitions
+
+    # Monte Carlo: terminal outcome only (win/loss), target = full-episode return G_t
+    mc_win_reward: float = 1.0
+    mc_loss_reward: float = -1.0
+
+    # Game
+    max_turns_per_game: int = 500
+    num_episodes: int = 60_000
+    num_players: int = 2
+
+    # Schedule: warmup (no training), then train every N episodes
+    warmup_episodes: int = 3000
+    train_every_n_episodes: int = 1000
+    train_steps_per_phase: int = 5000
+    # Vs checkpoint only: no warmup, fewer steps, lower LR, oversample wins (avoid overfitting / loss-dominated buffer)
+    train_steps_per_phase_vs_checkpoint: int = 2000
+    lr_vs_checkpoint: float = 2.5e-5  # lower than lr so we don't overwrite the good policy
+    win_oversample_vs_checkpoint: int = 3  # push each transition from winning games this many times
+
+    # Logging / checkpoints (save names use hero_vs_random_* or hero_vs_checkpoint_* from CLI)
+    log_every_episodes: int = 1000
+    checkpoint_every_episodes: int = 1000
+    checkpoint_dir: str = "checkpoints"
+
+
+# -----------------------------------------------------------------------------
+# Game / encoding constants (Splendor rules, not training knobs)
+# -----------------------------------------------------------------------------
 GEM_ORDER = ["Diamond", "Sapphire", "Emerald", "Ruby", "Onyx"]
 GEM_ORDER_LETTERS = ["D", "S", "E", "R", "O"]
 GEM_ORDER_LETTER_INDEX = {g: i for i, g in enumerate(GEM_ORDER_LETTERS)}
 GEM_INDEX = {g: i for i, g in enumerate(GEM_ORDER)}
-GEMS_WITH_GOLD = GEM_ORDER + ["gold"]          # bank & player tokens use gold too
-TABLE_ROWS, TABLE_COLS = 3, 4              # 12 visible cards
-TABLE_SLOTS = TABLE_ROWS * TABLE_COLS
+TABLE_ROWS, TABLE_COLS = 3, 4
 
-# Sensible caps for normalisation
 MAX_RESERVED = 3.0
-MAX_TOKENS_PER_GEM = 7.0                      # 7 gems per gemtype in a 4 man game
-MAX_GOLD = 5.0                                # most gold any 1 player can have
-MAX_VP_PER_CARD = 5.0                         # best t3 cards give up to 5 VP
-MAX_BONUS_PER_COLOR  = 18.0                   # from cards (18 onyx cards total from all 3 decks)
-MAX_CARD_COST        = 17.0                   # sum of gems for most expensive card
-MAX_POINTS = 19.0                             # player has 14 points, buys 5p card.
-MAX_COST_PER_COLOUR = 7.0                     # on 14, buys a 5 point card next turn.
-MAX_REQ_PER_COLOR = 4.0                       # nobles require up to 4 of a colour
-MAX_NOBLES = 5                                # max nobles on the table
-
-N_PLAYERS = 2
-steps = 0  # global env step counter for epsilon schedule
+MAX_TOKENS_PER_GEM = 7.0
+MAX_GOLD = 5.0
+MAX_VP_PER_CARD = 5.0
+MAX_BONUS_PER_COLOR = 18.0
+MAX_POINTS = 19.0
+MAX_COST_PER_COLOUR = 7.0
+MAX_REQ_PER_COLOR = 4.0
 
 
-# following some tutorial.
+# -----------------------------------------------------------------------------
+# Action space: loaded once from possible_moves.txt, passed through the code
+# -----------------------------------------------------------------------------
+class ActionSpace:
+    """Parsed action list and size. Created once at startup, no globals."""
+
+    def __init__(self, action_strings: List[str], canon_fn):
+        self.strings = action_strings
+        self.parsed = [canon_fn(parse_move(s)) for s in action_strings]
+        self.n_actions = len(action_strings)
+
+
+# -----------------------------------------------------------------------------
+# Model and replay buffer
+# -----------------------------------------------------------------------------
 
 class DQN(nn.Module):
     def __init__(self, input_dim, output_dim):
@@ -103,8 +146,11 @@ class ReplayMemory(object):
         return len(self.memory)
     
 
+# -----------------------------------------------------------------------------
+# State encoding: game state -> fixed-size float vector for the DQN
+# -----------------------------------------------------------------------------
 def encode_card(card) -> np.ndarray:
-    # 5 one-hot-gemType + 1 vp + 5 costs (len = 11)
+    """5 one-hot gemType + 1 VP + 5 costs (len = 11)."""
     if card is None:
         return np.zeros(11, dtype=np.float32)
 
@@ -205,274 +251,218 @@ def encode_nobles(nobles: list, num_players: int) -> np.ndarray:
         vecs.append(encode_noble(n, num_players))
     return np.concatenate(vecs, axis=0).astype(np.float32)
 
-def encode_state(state: GameState, turn: int = None) -> np.ndarray:
+def encode_state(state: GameState, turn: int = None, max_turns: int = 500) -> np.ndarray:
     num_players = len(state.players)
-
     parts = []
-    parts.append(encode_table(state))                         # 132
-    parts.append(encode_bank(state.bank, num_players))        # 6 (scaled by players)
-    for p in state.players:                                   # n × 46 if n players (min 2)
+    parts.append(encode_table(state))
+    parts.append(encode_bank(state.bank, num_players))
+    for p in state.players:
         parts.append(encode_player(p))
-    parts.append(encode_nobles(state.nobles, num_players))    # (num_players+1) * (5 + num_players)
+    parts.append(encode_nobles(state.nobles, num_players))
     if turn is not None:
-        parts.append(np.array([turn / MAX_TURNS_PER_GAME], dtype=np.float32))  # time remaining signal
-
+        parts.append(np.array([turn / max_turns], dtype=np.float32))
     return np.concatenate(parts, axis=0).astype(np.float32)
 
-def optimize_model(device, policy_net, target_net, optimizer, memory, criterion):
-    if len(memory) < BATCH_SIZE:
+def optimize_model(
+    device: torch.device,
+    policy_net: nn.Module,
+    target_net: nn.Module,
+    optimizer: optim.Optimizer,
+    memory: ReplayMemory,
+    criterion: nn.Module,
+    cfg: TrainConfig,
+):
+    """One DQN gradient step. Returns loss or None if buffer too small."""
+    if len(memory) < cfg.batch_size:
         return None
 
-    transitions = memory.sample(BATCH_SIZE)
+    transitions = memory.sample(cfg.batch_size)
     batch = Transition(*zip(*transitions))
 
     state_batch = torch.from_numpy(np.stack(batch.state)).float().to(device)
-    action_batch = torch.cat(batch.action).to(device)  # [B, 1]
-    reward_batch = torch.tensor(batch.reward, dtype=torch.float32, device=device).unsqueeze(1)  # [B, 1]
-    non_final_mask = torch.tensor([not d for d in batch.done], device=device, dtype=torch.bool)
+    action_batch = torch.cat(batch.action).to(device)
+    reward_batch = torch.tensor(batch.reward, dtype=torch.float32, device=device).unsqueeze(1)
 
-    q_values = policy_net(state_batch).gather(1, action_batch)  # [B, 1]
+    q_values = policy_net(state_batch).gather(1, action_batch)
+    # Monte Carlo: target is the stored return G_t (no bootstrap)
+    expected_q = reward_batch.clamp(-cfg.q_target_clip, cfg.q_target_clip)
 
-    next_state_values = torch.zeros(BATCH_SIZE, device=device)
-    if non_final_mask.any():
-        non_final_next_states = torch.from_numpy(
-            np.stack([s for s, d in zip(batch.nextState, batch.done) if not d])
-        ).float().to(device)
-        with torch.no_grad():
-            next_state_values[non_final_mask] = target_net(non_final_next_states).max(1)[0]
-    expected_q_values = reward_batch + GAMMA * next_state_values.unsqueeze(1)
-    # Clip targets to prevent Q-value explosion in long episodes (stable DQN)
-    expected_q_values = expected_q_values.clamp(-Q_TARGET_CLIP, Q_TARGET_CLIP)
-
-    loss = criterion(q_values, expected_q_values)
+    loss = criterion(q_values, expected_q)
     optimizer.zero_grad()
     loss.backward()
     torch.nn.utils.clip_grad_norm_(policy_net.parameters(), 0.5)
     optimizer.step()
 
-    # Soft target update
     for target_param, policy_param in zip(target_net.parameters(), policy_net.parameters()):
-        target_param.data.copy_(TAU * policy_param.data + (1.0 - TAU) * target_param.data)
+        target_param.data.copy_(cfg.tau * policy_param.data + (1.0 - cfg.tau) * target_param.data)
 
     return loss.item()
 
 
-def main_self_play(num_episodes: int = NUM_EPISODES):
-    """Self-play mode: one shared policy controls all seats and learns from all turns."""
-    global ACTION_STRINGS, ACTIONS_PARSED, N_ACTIONS
+# -----------------------------------------------------------------------------
+# Main: hero vs random (only mode)
+# -----------------------------------------------------------------------------
+def _load_checkpoint(path: str, device: torch.device, n_observations: int, n_actions: int):
+    """Load policy state dict; validate n_obs/n_actions. Returns state_dict."""
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"Checkpoint not found: {path!r}")
+    ckpt = torch.load(path, map_location=device)
+    if ckpt.get("n_obs") != n_observations or ckpt.get("n_actions") != n_actions:
+        raise ValueError(
+            f"Checkpoint {path} has n_obs={ckpt.get('n_obs')}, n_actions={ckpt.get('n_actions')}; "
+            f"expected {n_observations}, {n_actions}."
+        )
+    return ckpt["policy"]
+
+def run_hero_vs_random(
+    cfg: TrainConfig,
+    num_episodes: int = None,
+    hero_idx: int = 0,
+    start_path: str = None,
+    opponent_path: str = None,
+):
+    """
+    Train a single policy (hero). start_path = initial hero weights; opponent_path = fixed opponent (None = random).
+    Saves as hero_vs_random_epXXXX / hero_vs_checkpoint_epXXXX and _bestwr.
+    """
+    num_episodes = num_episodes if num_episodes is not None else cfg.num_episodes
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    max_turns = cfg.max_turns_per_game
+    run_tag = "hero_vs_random" if opponent_path is None else "hero_vs_checkpoint"
 
-    ACTION_STRINGS = load_valid_str_moves()
-    if not ACTION_STRINGS:
-        raise FileNotFoundError("data/possible_moves.txt not found; cannot load action list")
-    ACTIONS_PARSED = [canon_action(parse_move(s)) for s in ACTION_STRINGS]
-    N_ACTIONS = len(ACTION_STRINGS)
+    # Load action space once
+    action_strings = load_valid_str_moves()
+    if not action_strings:
+        raise FileNotFoundError("data/possible_moves.txt not found")
+    action_space = ActionSpace(action_strings, canon_action)
 
-    initialState = load_initial_state(N_PLAYERS)
-    encoded_state = encode_state(initialState, turn=0)
-    n_observations = len(encoded_state)
+    initial_state = load_initial_state(cfg.num_players)
+    n_observations = len(encode_state(initial_state, turn=0, max_turns=max_turns))
 
-    policy_net = DQN(n_observations, N_ACTIONS).to(device)
-    target_net = DQN(n_observations, N_ACTIONS).to(device)
+    policy_net = DQN(n_observations, action_space.n_actions).to(device)
+    target_net = DQN(n_observations, action_space.n_actions).to(device)
     target_net.load_state_dict(policy_net.state_dict())
 
-    optimizer = optim.AdamW(policy_net.parameters(), lr=LR, amsgrad=True)
-    memory = ReplayMemory(REPLAY_CAPACITY)
+    if start_path:
+        policy_net.load_state_dict(_load_checkpoint(start_path, device, n_observations, action_space.n_actions))
+        target_net.load_state_dict(policy_net.state_dict())
+        print(f"[HERO] Start: {start_path}")
+    else:
+        print("[HERO] Start: random init")
+
+    opponent_net = DQN(n_observations, action_space.n_actions).to(device)
+    if opponent_path:
+        opponent_net.load_state_dict(_load_checkpoint(opponent_path, device, n_observations, action_space.n_actions))
+        print(f"[HERO] Opponent: fixed checkpoint {opponent_path}")
+    else:
+        opponent_net.load_state_dict(policy_net.state_dict())  # unused
+        print("[HERO] Opponent: random")
+
+    # Vs checkpoint: no warmup, fewer gradient steps, lower LR, oversample wins
+    warmup_eff = 0 if opponent_path else cfg.warmup_episodes
+    train_steps_eff = cfg.train_steps_per_phase_vs_checkpoint if opponent_path else cfg.train_steps_per_phase
+    lr_eff = cfg.lr_vs_checkpoint if opponent_path else cfg.lr
+    if opponent_path:
+        print(f"[HERO] Vs checkpoint: warmup=0, train_steps={train_steps_eff}, lr={lr_eff}, win_oversample={cfg.win_oversample_vs_checkpoint}")
+
+    optimizer = optim.AdamW(policy_net.parameters(), lr=lr_eff, amsgrad=True)
+    memory = ReplayMemory(cfg.replay_capacity)
     criterion = nn.SmoothL1Loss()
 
-    # Diagnostics
-    running_loss_ema = None
-    episode_rewards = deque(maxlen=100)
-    episode_lengths = deque(maxlen=100)
-    player0_wins = 0
-    games_ended = 0
-
-    for episode in range(num_episodes):
-        state = load_initial_state(N_PLAYERS)
-        episode_reward = 0.0
-        turn = 0
-
-        while not state.game_over and turn < MAX_TURNS_PER_GAME:
-            active_idx = state.active_idx
-            prev_points = state.players[active_idx].points
-            prev_tokens = dict(state.players[active_idx].tokens)
-            prev_bonuses = dict(state.players[active_idx].bonuses)
-
-            action, state_vec = selectAction(state, policy_net, device, turn=turn)
-            action_idx = action.squeeze().item()
-
-            step_env(state, action_idx)
-            done = state.game_over
-            next_state_vec = encode_state(state, turn=turn + 1)
-            reward = compute_reward(prev_points, prev_tokens, prev_bonuses, state, active_idx, done)
-            if action_idx < len(ACTIONS_PARSED) and ACTIONS_PARSED[action_idx][0] == "SKIP":
-                reward += SKIP_PENALTY
-
-            episode_reward += reward
-            memory.push(
-                state_vec,
-                action.detach().cpu(),
-                next_state_vec,
-                reward,
-                done,
-            )
-            loss_val = optimize_model(device, policy_net, target_net, optimizer, memory, criterion)
-            if loss_val is not None:
-                running_loss_ema = loss_val if running_loss_ema is None else 0.99 * running_loss_ema + 0.01 * loss_val
-            turn += 1
-
-        episode_rewards.append(episode_reward)
-        episode_lengths.append(turn)
-        if state.game_over and state.final_summary:
-            games_ended += 1
-            scores = [state.players[i].points for i in range(len(state.players))]
-            max_score = max(scores)
-            winners = [i for i in range(len(scores)) if scores[i] == max_score]
-            if 0 in winners and len(winners) == 1:
-                player0_wins += 1
-
-        if (episode + 1) % LOG_EVERY_EPISODES == 0:
-            avg_reward = sum(episode_rewards) / len(episode_rewards) if episode_rewards else 0.0
-            avg_length = sum(episode_lengths) / len(episode_lengths) if episode_lengths else 0.0
-            win_rate = (player0_wins / games_ended * 100) if games_ended else 0.0
-            loss_str = f"loss_ema={running_loss_ema:.8f}" if running_loss_ema is not None else "loss_ema=N/A"
-            print(
-                f"[SELF] Ep {episode + 1:5d} | {loss_str} | avg_reward={avg_reward:.3f} | "
-                f"avg_len={avg_length:.1f} | ended={games_ended} | P0_win%={win_rate:.1f}"
-            )
-
-
-def main_hero_vs_random(num_episodes: int = NUM_EPISODES, hero_idx: int = 0):
-    """Hero-vs-opponents mode: only hero seat learns; others play random/opponent moves."""
-    global ACTION_STRINGS, ACTIONS_PARSED, N_ACTIONS
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    ACTION_STRINGS = load_valid_str_moves()
-    if not ACTION_STRINGS:
-        raise FileNotFoundError("data/possible_moves.txt not found; cannot load action list")
-    ACTIONS_PARSED = [canon_action(parse_move(s)) for s in ACTION_STRINGS]
-    N_ACTIONS = len(ACTION_STRINGS)
-
-    initialState = load_initial_state(N_PLAYERS)
-    encoded_state = encode_state(initialState, turn=0)
-    n_observations = len(encoded_state)
-
-    policy_net = DQN(n_observations, N_ACTIONS).to(device)
-    target_net = DQN(n_observations, N_ACTIONS).to(device)
-    target_net.load_state_dict(policy_net.state_dict())
-
-    optimizer = optim.AdamW(policy_net.parameters(), lr=LR, amsgrad=True)
-    memory = ReplayMemory(REPLAY_CAPACITY)
-    criterion = nn.SmoothL1Loss()
-
+    # Tracking
     running_loss_ema = None
     episode_rewards = deque(maxlen=100)
     episode_lengths = deque(maxlen=100)
     hero_wins = 0
     games_ended = 0
-    RECENT_WIN_WINDOW = 100  # rolling window for "recent" win % (reflects current policy)
-    recent_outcomes: deque = deque(maxlen=RECENT_WIN_WINDOW)  # 1=hero win, 0=loss, only when game ended
-
-    # No snapshot opponents: hero vs random only (opponents list left empty)
-    opponents: List[DQN] = []
-
-    best_recent_win = -1.0  # best recent_win% so far; save hero_bestwr.pt when we beat it
-
-    # Diagnostics: hero action-type distribution (rolling last N episodes)
+    recent_outcomes: deque = deque(maxlen=1000)  # recent_win% over last 1k games
+    best_recent_win = -1.0
     hero_action_history: deque = deque(maxlen=50)
-    _diag_time_warned = False
 
     for episode in range(num_episodes):
-        state = load_initial_state(N_PLAYERS)
+        state = load_initial_state(cfg.num_players)
         episode_reward = 0.0
         turn = 0
         last_hero_state_vec = None
         last_hero_action = None
-        hero_actions_this_ep: Dict[str, int] = {"BUY": 0, "TAKE_3": 0, "TAKE_2": 0, "RESERVE": 0, "OTHER": 0, "buy_legal_turns": 0, "buy_chosen": 0}
+        hero_trajectory: List[Tuple] = []  # (state_vec, action_cpu, next_state_vec, done) for MC
+        hero_actions_this_ep: Dict[str, int] = {
+            "BUY": 0, "TAKE_3": 0, "TAKE_2": 0, "RESERVE": 0, "OTHER": 0,
+            "buy_legal_turns": 0, "buy_chosen": 0,
+        }
 
-        while not state.game_over and turn < MAX_TURNS_PER_GAME:
+        while not state.game_over and turn < max_turns:
             active_idx = state.active_idx
 
             if active_idx == hero_idx:
-                if not _diag_time_warned:
-                    _diag_time_warned = True
-                    print("[DIAG] State now includes turn/MAX_TURNS so policy can condition on time remaining.")
-                    print("[DIAG] Cap loss is applied only to the last transition; gamma^steps is tiny so early moves get almost no gradient from 'hit cap'.")
-
-                prev_points = state.players[active_idx].points
-                prev_tokens = dict(state.players[active_idx].tokens)
-                prev_bonuses = dict(state.players[active_idx].bonuses)
-
-                # Was BUY legal this turn? (so we can report "buy rate when buy was legal")
-                mask_np = legal_action_mask(state)
-                buy_legal = any(ACTIONS_PARSED[i][0] == "BUY" for i in range(N_ACTIONS) if mask_np[i])
+                mask_np = legal_action_mask(state, action_space.parsed)
+                buy_legal = any(
+                    action_space.parsed[i][0] == "BUY"
+                    for i in range(action_space.n_actions)
+                    if mask_np[i]
+                )
                 if buy_legal:
                     hero_actions_this_ep["buy_legal_turns"] += 1
 
-                # Episode-based epsilon so hero is mostly greedy by ~1k episodes (not step-based)
-                eps_hero = EPS_END + (EPS_START - EPS_END) * math.exp(-1.0 * episode / EPS_DECAY_EPISODES)
-                action, state_vec = selectAction(state, policy_net, device, turn=turn, epsilon_override=eps_hero)
+                eps_start_eff = cfg.eps_start_resume if start_path else cfg.eps_start
+                eps = cfg.eps_end + (eps_start_eff - cfg.eps_end) * math.exp(
+                    -1.0 * episode / cfg.eps_decay_episodes
+                )
+                action, state_vec = select_action(
+                    state, policy_net, device, action_space,
+                    turn=turn, max_turns=max_turns, epsilon=eps,
+                )
                 action_idx = action.squeeze().item()
                 action_cpu = action.detach().cpu()
-                kind = ACTIONS_PARSED[action_idx][0] if action_idx < len(ACTIONS_PARSED) else "OTHER"
+                kind = action_space.parsed[action_idx][0] if action_idx < len(action_space.parsed) else "OTHER"
                 hero_actions_this_ep[kind] = hero_actions_this_ep.get(kind, 0) + 1
                 if kind == "BUY":
                     hero_actions_this_ep["buy_chosen"] += 1
 
-                step_env(state, action_idx)
+                step_env(state, action_idx, action_space.parsed)
                 done = state.game_over
-                next_state_vec = encode_state(state, turn=turn + 1)
-                reward = compute_reward(
-                    prev_points, prev_tokens, prev_bonuses, state, active_idx, done, turn_count=turn + 1
-                )
-                if kind == "SKIP":
-                    reward += SKIP_PENALTY
-
-                episode_reward += reward
-                memory.push(
-                    state_vec,
-                    action_cpu,
-                    next_state_vec,
-                    reward,
-                    done,
-                )
+                next_state_vec = encode_state(state, turn=turn + 1, max_turns=max_turns)
+                hero_trajectory.append((state_vec, action_cpu, next_state_vec, done))
                 last_hero_state_vec = state_vec
                 last_hero_action = action_cpu
-                loss_val = optimize_model(device, policy_net, target_net, optimizer, memory, criterion)
-                if loss_val is not None:
-                    running_loss_ema = loss_val if running_loss_ema is None else 0.99 * running_loss_ema + 0.01 * loss_val
             else:
-                # Opponent: use a frozen snapshot policy if available, with its own epsilon-random moves
-                if opponents:
-                    opp_net = random.choice(opponents)
-                    if random.random() < OPPONENT_EPSILON:
-                        opp_action_idx = sample_random_legal_action_index(state)
-                    else:
-                        opp_action_idx = select_greedy_action_with_net(state, opp_net, device, turn=turn)
+                if opponent_path is not None:
+                    opp_idx = select_greedy_action_with_net(
+                        state, opponent_net, device, action_space, turn=turn, max_turns=max_turns
+                    )
                 else:
-                    opp_action_idx = sample_random_legal_action_index(state)
-                step_env(state, opp_action_idx)
+                    opp_idx = sample_random_legal_action_index(state, action_space)
+                step_env(state, opp_idx, action_space.parsed)
 
             turn += 1
 
-        # Cap = loss: if we hit max turns without game over, give hero a terminal loss signal
-        if turn >= MAX_TURNS_PER_GAME and not state.game_over and last_hero_state_vec is not None:
-            final_state_vec = encode_state(state, turn=turn)
-            memory.push(
-                last_hero_state_vec,
-                last_hero_action,
-                final_state_vec,
-                CAP_LOSS_REWARD,
-                True,
-            )
-            episode_reward += CAP_LOSS_REWARD
-            loss_val = optimize_model(device, policy_net, target_net, optimizer, memory, criterion)
-            if loss_val is not None:
-                running_loss_ema = loss_val if running_loss_ema is None else 0.99 * running_loss_ema + 0.01 * loss_val
-
+        # Monte Carlo: outcome R, then back up return G_t along the trajectory
+        if hero_trajectory:
+            if turn >= max_turns and not state.game_over and last_hero_state_vec is not None:
+                final_state_vec = encode_state(state, turn=turn, max_turns=max_turns)
+                hero_trajectory.append((last_hero_state_vec, last_hero_action, final_state_vec, True))
+                R = cfg.mc_loss_reward
+            elif state.game_over and state.final_summary:
+                scores = [state.players[i].points for i in range(len(state.players))]
+                max_score = max(scores)
+                winners = [i for i in range(len(scores)) if scores[i] == max_score]
+                R = cfg.mc_win_reward if (hero_idx in winners and len(winners) == 1) else cfg.mc_loss_reward
+            else:
+                R = cfg.mc_loss_reward
+            T = len(hero_trajectory)
+            # Vs checkpoint: oversample winning trajectories so buffer isn't dominated by losses
+            win_mult = cfg.win_oversample_vs_checkpoint if (opponent_path and R == cfg.mc_win_reward) else 1
+            for t, (s, a, next_s, done) in enumerate(hero_trajectory):
+                G_t = (cfg.gamma ** (T - 1 - t)) * R
+                G_t = max(-cfg.q_target_clip, min(cfg.q_target_clip, G_t))
+                base_mult = cfg.terminal_replay_multiplier if (t == T - 1) else 1
+                for _ in range(base_mult * win_mult):
+                    memory.push(s, a, next_s, float(G_t), done)
+            episode_reward = R
         hero_action_history.append(hero_actions_this_ep)
         episode_rewards.append(episode_reward)
         episode_lengths.append(turn)
+
         if state.game_over and state.final_summary:
             games_ended += 1
             scores = [state.players[i].points for i in range(len(state.players))]
@@ -483,55 +473,67 @@ def main_hero_vs_random(num_episodes: int = NUM_EPISODES, hero_idx: int = 0):
                 hero_wins += 1
             recent_outcomes.append(1 if hero_won else 0)
 
-        # Save checkpoint every CHECKPOINT_EVERY_EPISODES (100, 200, ..., 1000)
-        if (episode + 1) % CHECKPOINT_EVERY_EPISODES == 0:
-            os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-            path = os.path.join(CHECKPOINT_DIR, "hero_ep%05d.pt" % (episode + 1))
+        # Training phase: every N episodes after warmup
+        if (episode + 1) >= warmup_eff and (episode + 1) % cfg.train_every_n_episodes == 0:
+            for _ in range(train_steps_eff):
+                loss_val = optimize_model(
+                    device, policy_net, target_net, optimizer, memory, criterion, cfg,
+                )
+                if loss_val is not None:
+                    running_loss_ema = (
+                        loss_val if running_loss_ema is None
+                        else 0.99 * running_loss_ema + 0.01 * loss_val
+                    )
+            if running_loss_ema is not None:
+                print(f"[HERO] Training phase at ep {episode + 1}: {train_steps_eff} steps, loss_ema={running_loss_ema:.4f}")
+
+        # Checkpoints: hero_vs_random_epXXXX or hero_vs_checkpoint_epXXXX (and _bestwr)
+        if (episode + 1) % cfg.checkpoint_every_episodes == 0:
+            os.makedirs(cfg.checkpoint_dir, exist_ok=True)
+            path = os.path.join(cfg.checkpoint_dir, f"{run_tag}_ep{episode + 1:05d}.pt")
             torch.save({
                 "policy": policy_net.state_dict(),
                 "n_obs": n_observations,
-                "n_actions": N_ACTIONS,
+                "n_actions": action_space.n_actions,
                 "episode": episode + 1,
             }, path)
             print("[HERO] Saved checkpoint: %s" % path)
 
-        # Best win-rate checkpoint: save when recent_win% beats previous best (at each 100-ep boundary)
-        if (episode + 1) % CHECKPOINT_EVERY_EPISODES == 0 and recent_outcomes:
+        if (episode + 1) % cfg.checkpoint_every_episodes == 0 and recent_outcomes:
             recent_win_pct = 100.0 * sum(recent_outcomes) / len(recent_outcomes)
             if recent_win_pct > best_recent_win:
                 best_recent_win = recent_win_pct
-                best_path = os.path.join(CHECKPOINT_DIR, BESTWR_FILENAME)
+                best_path = os.path.join(cfg.checkpoint_dir, f"{run_tag}_bestwr.pt")
                 torch.save({
                     "policy": policy_net.state_dict(),
                     "n_obs": n_observations,
-                    "n_actions": N_ACTIONS,
+                    "n_actions": action_space.n_actions,
                     "episode": episode + 1,
                     "recent_win_pct": best_recent_win,
                 }, best_path)
                 print("[HERO] New best recent_win%%=%.1f -> %s" % (best_recent_win, best_path))
 
-        if (episode + 1) % LOG_EVERY_EPISODES == 0:
+        # Log
+        if (episode + 1) % cfg.log_every_episodes == 0:
             avg_reward = sum(episode_rewards) / len(episode_rewards) if episode_rewards else 0.0
             avg_length = sum(episode_lengths) / len(episode_lengths) if episode_lengths else 0.0
             win_rate_cumul = (hero_wins / games_ended * 100) if games_ended else 0.0
             recent_win = (100.0 * sum(recent_outcomes) / len(recent_outcomes)) if recent_outcomes else 0.0
-            loss_str = f"loss_ema={running_loss_ema:.4f}" if running_loss_ema is not None else "loss_ema=N/A"
-            # Buy rate when BUY was legal (not confounded by game length)
-            total_buy_legal = sum(d.get("buy_legal_turns", 0) for d in hero_action_history)
-            total_buy_chosen = sum(d.get("buy_chosen", 0) for d in hero_action_history)
-            buy_rate_when_legal = (100.0 * total_buy_chosen / total_buy_legal) if total_buy_legal else 0.0
-            avg_buys_per_ep = total_buy_chosen / len(hero_action_history) if hero_action_history else 0.0
-            # recent_win% = performance metric; loss_ema = TD error (often not aligned with win rate)
+            loss_str = "warmup (no train)" if episode < warmup_eff else f"loss_ema={running_loss_ema:.4f}"
+            if warmup_eff and (episode + 1) == warmup_eff:
+                print(f"[HERO] Warmup complete ({warmup_eff} episodes). Training started.")
             print(
                 f"[HERO] Ep {episode + 1:5d} | recent_win%={recent_win:.1f} (last {len(recent_outcomes)}) | "
                 f"cumul_win%={win_rate_cumul:.1f} | {loss_str} | avg_reward={avg_reward:.3f} | avg_len={avg_length:.1f}"
             )
-            # print("       when BUY legal: chose BUY %.1f%% (avg %.1f buys/ep)" % (buy_rate_when_legal, avg_buys_per_ep))
 
 
 
+# -----------------------------------------------------------------------------
+# Action helpers: canonical move format, legal mask, selection, env step
+# -----------------------------------------------------------------------------
 def canon_action(a):
-    #Canonicalise (kind, payload) to match engine ordering
+    """Canonicalise (kind, payload) to match engine ordering."""
     kind, payload = a
     kind = kind.upper()
 
@@ -553,26 +555,33 @@ def canon_action(a):
     return (kind, payload)
     
 
-def legal_action_mask(state: GameState) -> np.ndarray:
-    """Boolean mask aligned with ACTIONS_PARSED (True = legal now)."""
+def legal_action_mask(state: GameState, actions_parsed: List) -> np.ndarray:
+    """Boolean mask aligned with actions_parsed (True = legal in this state)."""
     legal_now = {canon_action(a) for a in check_all_available_moves(state)}
-    return np.array([a in legal_now for a in ACTIONS_PARSED], dtype=bool)
+    return np.array([a in legal_now for a in actions_parsed], dtype=bool)
 
 
-def sample_random_legal_action_index(state: GameState) -> int:
-    """Sample a random legal action index (fallback to any index if none)."""
-    mask_np = legal_action_mask(state)
+def sample_random_legal_action_index(state: GameState, action_space: ActionSpace) -> int:
+    """Random legal action index; fallback to any index if none legal."""
+    mask_np = legal_action_mask(state, action_space.parsed)
     legal_idx = np.flatnonzero(mask_np)
     if legal_idx.size:
         return int(np.random.choice(legal_idx))
-    return int(np.random.randint(0, N_ACTIONS))
+    return int(np.random.randint(0, action_space.n_actions))
 
 
-def select_greedy_action_with_net(state: GameState, net: DQN, device: torch.device, turn: int = None) -> int:
-    """Greedy action from a given network (used by frozen opponents)."""
-    state_vec = encode_state(state, turn=turn)
+def select_greedy_action_with_net(
+    state: GameState,
+    net: DQN,
+    device: torch.device,
+    action_space: ActionSpace,
+    turn: int = None,
+    max_turns: int = 500,
+) -> int:
+    """Greedy action from a given network (e.g. frozen opponent)."""
+    state_vec = encode_state(state, turn=turn, max_turns=max_turns)
     state_t = torch.from_numpy(state_vec).to(device).unsqueeze(0)
-    mask_np = legal_action_mask(state)
+    mask_np = legal_action_mask(state, action_space.parsed)
     mask_t = torch.from_numpy(mask_np).to(device)
     with torch.no_grad():
         q = net(state_t)
@@ -580,155 +589,86 @@ def select_greedy_action_with_net(state: GameState, net: DQN, device: torch.devi
             q[0, ~mask_t] = -float("inf")
             a = q.argmax(dim=1, keepdim=True)
         else:
-            a = torch.randint(0, N_ACTIONS, (1, 1), device=device)
+            a = torch.randint(0, action_space.n_actions, (1, 1), device=device)
     return int(a.item())
 
-def selectAction(state: GameState, policyNet: DQN, device: torch.device, turn: int = None, epsilon_override: float = None):
-    """ε-greedy action selection returning both action index tensor and encoded state vector.
 
-    If epsilon_override is set (e.g. hero mode with episode-based decay), use it and do not
-    increment the global steps counter. Otherwise use step-based decay.
-    Returns:
-        action_tensor: shape [1,1], long
-        state_vec: numpy float32 vector encoding the state (for replay)
-    """
-    global steps
-
-    state_vec = encode_state(state, turn=turn)  # numpy float32
+def select_action(
+    state: GameState,
+    policy_net: DQN,
+    device: torch.device,
+    action_space: ActionSpace,
+    turn: int = None,
+    max_turns: int = 500,
+    epsilon: float = None,
+) -> Tuple[torch.Tensor, np.ndarray]:
+    """Epsilon-greedy action. Returns (action_tensor [1,1], state_vec)."""
+    state_vec = encode_state(state, turn=turn, max_turns=max_turns)
     state_t = torch.from_numpy(state_vec).to(device).unsqueeze(0)
+    eps = epsilon if epsilon is not None else 0.01
+    mask_np = legal_action_mask(state, action_space.parsed)
+    mask_t = torch.from_numpy(mask_np).to(device)
 
-    if epsilon_override is not None:
-        eps_threshold = epsilon_override
-    else:
-        eps_threshold = EPS_END + (EPS_START - EPS_END) * math.exp(-1. * steps / EPS_DECAY)
-        steps += 1
-
-    mask_np = legal_action_mask(state)                       # [N_ACTIONS] bool
-    mask_t  = torch.from_numpy(mask_np).to(device)
-    
-    # If we rolled a number above the epsilon threshold, do what is determined by our learned model
-    if random.random() > eps_threshold:
-        with torch.no_grad(): #Turn off gradient flowing, the learning happens from the transition stores
-            q = policyNet(state_t)                          # [1, N_ACTIONS]
+    if random.random() > eps:
+        with torch.no_grad():
+            q = policy_net(state_t)
             if mask_t.any():
-                q[0, ~mask_t] = -float("inf")               # forbid illegal
-                a = q.argmax(dim=1, keepdim=True)           # [1,1]
+                q[0, ~mask_t] = -float("inf")
+                a = q.argmax(dim=1, keepdim=True)
             else:
-                a = torch.randint(0, N_ACTIONS, (1,1), device=device)
+                a = torch.randint(0, action_space.n_actions, (1, 1), device=device)
         return a.to(torch.long), state_vec
-    else:
-        # If we rolled below the epsilon threshold, do something random for exploration
-        idx = sample_random_legal_action_index(state)
-        return torch.tensor([[idx]], device=device, dtype=torch.long), state_vec
-    
+    idx = sample_random_legal_action_index(state, action_space)
+    return torch.tensor([[idx]], device=device, dtype=torch.long), state_vec
 
 
-def step_env(state: GameState, action_index: int):
-    """Map index -> engine move tuple, apply, return (next_state, info_str, done)."""
-    move = ACTIONS_PARSED[action_index]   # canonical engine tuple
-    info = apply_move(state, move)        # mutates state; returns status string
-    done = state.game_over
-    return state, info, done
-
-
-def _card_progress_value(card: Card, tokens: Dict[str, int], bonuses: Dict[str, int]) -> float:
-    """Heuristic value: how close the player is to affording this card."""
-    if card is None:
-        return 0.0
-    # Compute remaining total cost after bonuses and coloured tokens (ignore gold for simplicity)
-    remaining = 0
-    for gem in GEM_ORDER:
-        cost = card.cost[gem]
-        bonus = bonuses.get(gem.lower(), 0)
-        need = max(0, cost - bonus)
-        have = tokens.get(gem.lower(), 0)
-        remaining += max(0, need - have)
-    # Higher VP and smaller remaining cost => higher value
-    return float(card.victoryPoints) / (1.0 + float(remaining))
-
-
-def _state_card_value_for_player(state: GameState, player_idx: int) -> float:
-    """Sum progress value over table + reserved cards for a given player."""
-    p = state.players[player_idx]
-    tokens = p.tokens
-    bonuses = p.bonuses
-    total = 0.0
-    # Visible table cards
-    for c in list(state.table_t1) + list(state.table_t2) + list(state.table_t3):
-        total += _card_progress_value(c, tokens, bonuses)
-    # Reserved cards
-    for c in p.reserved:
-        total += _card_progress_value(c, tokens, bonuses)
-    return total
-
-
-def compute_reward(
-    prev_points: int,
-    prev_tokens: Dict[str, int],
-    prev_bonuses: Dict[str, int],
-    state_after: GameState,
-    active_player_idx: int,
-    done: bool,
-    turn_count: int = None,
-) -> float:
-    """Reward: terminal win/loss ±2 (+ optional early-win bonus). If not SPARSE_REWARD, add VP/card-value/bonus shaping."""
-    reward = 0.0
-
-    if not SPARSE_REWARD:
-        p = state_after.players[active_player_idx]
-        delta_points = p.points - prev_points
-        reward += delta_points * 0.5
-        before_value = _state_card_value_for_player(state_after, active_player_idx)
-        current_tokens, current_bonuses = p.tokens, p.bonuses
-        p.tokens = prev_tokens
-        p.bonuses = prev_bonuses
-        try:
-            prev_value = _state_card_value_for_player(state_after, active_player_idx)
-        finally:
-            p.tokens = current_tokens
-            p.bonuses = current_bonuses
-        reward += 0.1 * (before_value - prev_value)
-        bonus_delta = sum(p.bonuses.get(g.lower(), 0) - prev_bonuses.get(g.lower(), 0) for g in GEM_ORDER)
-        reward += 0.02 * bonus_delta
-
-    # Terminal: win/loss (strong ±2 signal)
-    if done and state_after.final_summary:
-        p = state_after.players[active_player_idx]
-        scores = [state_after.players[i].points for i in range(len(state_after.players))]
-        max_score = max(scores)
-        winners = [i for i in range(len(scores)) if scores[i] == max_score]
-        if active_player_idx in winners:
-            reward += TERMINAL_WIN_REWARD if len(winners) == 1 else 0.0
-            if not SPARSE_REWARD and turn_count is not None and len(winners) == 1 and turn_count <= EARLY_WIN_TURN_THRESHOLD:
-                reward += EARLY_WIN_BONUS
-        else:
-            reward += TERMINAL_LOSS_REWARD
-
-    reward -= 0.005  # small time penalty
-    return float(np.clip(reward, -REWARD_CLIP, REWARD_CLIP))
+def step_env(state: GameState, action_index: int, actions_parsed: List) -> Tuple[GameState, str, bool]:
+    """Apply move at index; mutates state. Returns (state, info_str, done)."""
+    move = actions_parsed[action_index]
+    info = apply_move(state, move)
+    return state, info, state.game_over
 
 
 def main():
+    cfg = TrainConfig()
     parser = argparse.ArgumentParser(description="Train Splendor DQN")
     parser.add_argument(
-        "--mode",
-        choices=["self_play", "hero_vs_random"],
-        default="self_play",
-        help="Training mode: shared self-play or hero vs random opponents",
+        "--opponent",
+        type=str,
+        default="random",
+        help='Opponent: "random" or path to a .pt checkpoint (fixed opponent; saves as hero_vs_checkpoint_*)',
+    )
+    parser.add_argument(
+        "--start",
+        type=str,
+        default=None,
+        help="Path to .pt to load as hero start. If unset and --opponent is a path, hero starts from that same file.",
     )
     parser.add_argument(
         "--episodes",
         type=int,
-        default=NUM_EPISODES,
-        help="Number of training episodes (games) to run",
+        default=cfg.num_episodes,
+        help="Number of games to run (default: %(default)s)",
     )
     args = parser.parse_args()
 
-    if args.mode == "self_play":
-        main_self_play(num_episodes=args.episodes)
-    else:
-        main_hero_vs_random(num_episodes=args.episodes)
+    opponent_path = None if (args.opponent.lower() == "random") else args.opponent
+    start_path = args.start if args.start else opponent_path  # default start = opponent when vs checkpoint
+
+    run_hero_vs_random(
+        cfg,
+        num_episodes=args.episodes,
+        start_path=start_path,
+        opponent_path=opponent_path,
+    )
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nInterrupted by user")
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        raise
